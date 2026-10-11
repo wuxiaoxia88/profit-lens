@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+local-data/
+*.xlsx
+*.xls
+*.csv
+!public/**/*.csv
+.DS_Store
+*.log
+.vite/
+coverage/
+*.tsbuildinfo
+.claude/

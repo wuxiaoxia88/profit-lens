@@ -1,0 +1,39 @@
+{
+  "name": "profit-lens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "盈亏透镜：快递网点客户发件盈亏分析与报价决策工具（纯浏览器本地运行）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "release": "npm run build && node -e \"require('fs').mkdirSync('release',{recursive:true});require('fs').copyFileSync('dist/index.html','release/ProfitLens.html')\""
+  },
+  "license": "MIT",
+  "dependencies": {
+    "echarts": "^5.6.0",
+    "fflate": "^0.8.3",
+    "jspdf": "^4.2.1",
+    "marked": "^18.1.0",
+    "modern-screenshot": "^4.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4",
+    "vite-plugin-singlefile": "^2.3.3",
+    "vitest": "^3.2.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wuxiaoxia88/profit-lens.git"
+  }
+}

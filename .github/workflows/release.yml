@@ -1,0 +1,28 @@
+# 推送 v* 标签时，构建离线单文件 ProfitLens.html 并附到 GitHub Release
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run release
+      - name: 提取本版本更新说明
+        run: |
+          awk -v tag="${GITHUB_REF_NAME#v}" '$0 ~ "^## \\[?"tag {f=1; next} /^## / && f {exit} f' CHANGELOG.md > notes.md
+          echo "" >> notes.md
+          echo "**下载 \`ProfitLens.html\`，双击即可在 Windows / Mac 浏览器中使用。**" >> notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/ProfitLens.html
+          body_path: notes.md
