@@ -109,6 +109,7 @@ export interface Filters {
   /** 字典编码集合；null 表示不过滤 */
   accounts: Set<number> | null;
   customers: Set<number> | null;
+  customerTypes: Set<number> | null;
   signStatus: Set<number> | null;
   provinces: Set<number> | null;
   returned: TriState;
@@ -119,7 +120,7 @@ export interface Filters {
 }
 
 export const DEFAULT_FILTERS: Filters = {
-  dateFrom: null, dateTo: null, accounts: null, customers: null, signStatus: null, provinces: null,
+  dateFrom: null, dateTo: null, accounts: null, customers: null, customerTypes: null, signStatus: null, provinces: null,
   returned: 'all', selfSign: 'all', shipped: 'all', excludeAbnormal: false,
 };
 
@@ -150,6 +151,7 @@ export function applyFilters(m: Model, f: Filters): { mask: Uint8Array; count: n
   };
   dictFilter('account', f.accounts);
   dictFilter('customer', f.customers);
+  dictFilter('customerType', f.customerTypes);
   dictFilter('signStatus', f.signStatus);
   triFilter('returned', f.returned);
   triFilter('selfSign', f.selfSign);

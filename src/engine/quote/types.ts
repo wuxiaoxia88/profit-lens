@@ -10,13 +10,21 @@ export const ROUNDING_LABEL: Record<Rounding, string> = {
   exact: '按实重',
 };
 
-/** 续重规则：重量 > start 时，价格 = base + perKg × g(重量 − start) */
+/**
+ * 续重规则：重量 > start 时，价格 = base + perKg × g(重量 − origin)。
+ * origin 缺省等于 start。客户报价单常见两种写法：
+ *   「3kg 以上 = 面单款 3 元 + 单价 × 整公斤数（从 0kg 开始）」→ start=3, origin=0, base=3
+ *   「2kg 以上 = 首重 4 元 +（重量 − 1）× 单价」             → start=2, origin=1, base=4
+ */
 export interface TailRule {
   start: number;
   base: number;
   perKg: number;
   rounding: Rounding;
+  origin?: number;
 }
+
+export const originOf = (t: TailRule) => t.origin ?? t.start;
 
 export interface ZoneStats {
   tickets: number;
@@ -64,7 +72,7 @@ export function gOf(x: number, r: Rounding): number {
 }
 
 export function tailPrice(t: TailRule, w: number): number {
-  return round2(t.base + t.perKg * gOf(w - t.start, t.rounding));
+  return round2(t.base + t.perKg * gOf(w - originOf(t), t.rounding));
 }
 
 /** 按报价计算某分区某重量的应收价；返回 NaN 表示无报价 */
@@ -84,12 +92,15 @@ export function sameTail(a: TailRule | null, b: TailRule | null): boolean {
     Math.abs(a.start - b.start) < 1e-9 &&
     Math.abs(a.base - b.base) < PRICE_TOL &&
     Math.abs(a.perKg - b.perKg) < 1e-6 &&
-    a.rounding === b.rounding
+    a.rounding === b.rounding &&
+    Math.abs(originOf(a) - originOf(b)) < 1e-9
   );
 }
 
 export function describeTail(t: TailRule): string {
-  const g = t.rounding === 'exact' ? `(重量−${t.start})` : t.rounding === 'ceil' ? `⌈重量−${t.start}⌉` : `⌈(重量−${t.start})×2⌉÷2`;
+  const o = originOf(t);
+  const x = o === 0 ? '重量' : `重量−${o}`;
+  const g = t.rounding === 'exact' ? `(${x})` : t.rounding === 'ceil' ? `⌈${x}⌉` : `⌈(${x})×2⌉÷2`;
   return `>${t.start}kg：${t.base} + ${t.perKg}×${g}`;
 }
 

@@ -7,8 +7,10 @@ import { inferQuote, type InferResult } from '../engine/quote/infer';
 import { detectPricePeriods, periodMask, type PricePeriod } from '../engine/quote/periods';
 import type { Quote } from '../engine/quote/types';
 import type { DictField } from '../engine/schema';
+import { DEFAULT_PROVINCE_NOTES, type ProvinceNotes } from '../engine/notes';
+import type { ParsedSheet } from '../engine/quote/workbook';
 
-export type TabId = 'overview' | 'matrix' | 'structure' | 'quote' | 'sim' | 'quality' | 'help';
+export type TabId = 'customers' | 'overview' | 'matrix' | 'structure' | 'quote' | 'sim' | 'quality' | 'help';
 
 export interface LoadingState {
   stage: '识别表头' | '解析数据' | '建立分析模型';
@@ -34,6 +36,17 @@ export interface State {
   simQuote: Quote | null;
   periodIdx: number | null;
   loadMs: number;
+  provinceNotes: ProvinceNotes;
+  /** 上传的多客户报价工作簿；assign：结算对象名 → 工作表名（用户可改） */
+  quoteBook: QuoteBook | null;
+}
+
+export interface QuoteBook {
+  fileName: string;
+  sheets: ParsedSheet[];
+  assign: Record<string, string>;
+  /** 自动匹配时只靠括号别名命中的，需要用户确认 */
+  weak: string[];
 }
 
 type Action =
@@ -48,7 +61,10 @@ type Action =
   | { type: 'error'; error: string | null }
   | { type: 'uploadedQuote'; quote: Quote | null }
   | { type: 'simQuote'; quote: Quote | null }
-  | { type: 'period'; idx: number | null };
+  | { type: 'period'; idx: number | null }
+  | { type: 'provinceNotes'; notes: ProvinceNotes }
+  | { type: 'quoteBook'; book: QuoteBook | null }
+  | { type: 'assign'; customer: string; sheet: string | null };
 
 const LS = 'profit-lens:v1:';
 function loadLS<T>(key: string, fallback: T): T {
@@ -67,7 +83,8 @@ const initial: State = {
   data: null,
   model: null,
   filters: DEFAULT_FILTERS,
-  opCost: loadLS<OpCost>('opCost', { perTicket: 0, fixedTotal: 0 }),
+  // 线下成本默认 0.35 元/票（客服、操作、运输、管理），可在页面顶部修改
+  opCost: loadLS<OpCost>('opCost', { perTicket: 0.35, fixedTotal: 0 }),
   bandsOverride: loadLS<number[] | null>('bands', null),
   autoBands: DEFAULT_BREAKPOINTS,
   tab: 'overview',
@@ -78,6 +95,8 @@ const initial: State = {
   simQuote: null,
   periodIdx: null,
   loadMs: 0,
+  provinceNotes: loadLS<ProvinceNotes>('provinceNotes', DEFAULT_PROVINCE_NOTES),
+  quoteBook: null,
 };
 
 /** 默认分析重量段：用还原出的报价断点（与客户报价一致），再补上常用的大重量分界 */
@@ -98,7 +117,8 @@ function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'data': {
       const model = buildModel(a.data);
-      return { ...s, data: a.data, model, filters: DEFAULT_FILTERS, autoBands: autoBandsFor(model), loading: null, error: null, uploadedQuote: null, simQuote: null, periodIdx: null, loadMs: a.loadMs, tab: s.tab === 'help' ? 'overview' : s.tab };
+      const multi = (a.data.dict.customer?.values.filter(Boolean).length ?? 0) > 1;
+      return { ...s, data: a.data, model, filters: DEFAULT_FILTERS, autoBands: autoBandsFor(model), loading: null, error: null, uploadedQuote: null, simQuote: null, periodIdx: null, loadMs: a.loadMs, tab: multi ? 'customers' : 'overview' };
     }
     case 'clear': return { ...s, data: null, model: null, uploadedQuote: null, simQuote: null };
     case 'filters': return { ...s, filters: a.filters, periodIdx: null };
@@ -111,6 +131,14 @@ function reducer(s: State, a: Action): State {
     case 'uploadedQuote': return { ...s, uploadedQuote: a.quote };
     case 'simQuote': return { ...s, simQuote: a.quote };
     case 'period': return { ...s, periodIdx: a.idx };
+    case 'provinceNotes': return { ...s, provinceNotes: a.notes };
+    case 'quoteBook': return { ...s, quoteBook: a.book };
+    case 'assign': {
+      if (!s.quoteBook) return s;
+      const assign = { ...s.quoteBook.assign };
+      if (a.sheet) assign[a.customer] = a.sheet; else delete assign[a.customer];
+      return { ...s, quoteBook: { ...s.quoteBook, assign, weak: s.quoteBook.weak.filter((c) => c !== a.customer) } };
+    }
   }
 }
 
@@ -126,6 +154,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => saveLS('opCost', s.opCost), [s.opCost]);
   useEffect(() => saveLS('bands', s.bandsOverride), [s.bandsOverride]);
   useEffect(() => saveLS('anonymize', s.anonymize), [s.anonymize]);
+  useEffect(() => saveLS('provinceNotes', s.provinceNotes), [s.provinceNotes]);
   const value = useMemo(() => ({ s, dispatch }), [s]);
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;
 }

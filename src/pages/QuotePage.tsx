@@ -15,6 +15,9 @@ import { attachStats } from '../engine/quote/infer';
 import { quoteToRows, rowsToQuote, TEMPLATE_GUIDE } from '../engine/quote/template';
 import type { Quote } from '../engine/quote/types';
 import { writeXlsx, type Cell } from '../engine/xlsxWriter';
+import { sheetOf } from '../app/book';
+import { NO_DATE, stringToDay } from '../engine/dataset';
+import { ProvinceNoteList } from '../components/ProvinceNotes';
 
 const BASIS_TEXT = { 'sheet+transfer': '面单收入 + 中转收入', 'income-va': '收入 − 增值收入', income: '收入' } as const;
 
@@ -22,22 +25,43 @@ export function QuotePage() {
   const d = useDerived()!;
   const inf = useInference();
   const { s, dispatch } = useStore();
-  const [target, setTarget] = useState<'inferred' | 'uploaded'>('inferred');
+  const [targetPref, setTarget] = useState<'inferred' | 'uploaded' | null>(null);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // 筛选范围内有哪些结算对象：报价是按客户定的，多个客户混在一起无法还原
+  const custList = useMemo(() => {
+    const col = d.model.data.dict.customer;
+    if (!col) return [];
+    const cnt = new Float64Array(col.values.length);
+    for (let i = 0; i < d.model.n; i++) if (d.mask[i]) cnt[col.codes[i]]++;
+    return col.values.map((_, c) => ({ code: c, n: cnt[c] })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
+  }, [d]);
+  const single = custList.length === 1 ? custList[0] : null;
+  const bookSheet = single ? sheetOf(s.quoteBook, d.model.data.dict.customer!.values[single.code]) : undefined;
+
   const inferred = inf?.result?.quote ?? null;
-  const uploaded = s.uploadedQuote;
+  const uploaded = s.uploadedQuote ?? bookSheet?.quote ?? null;
+  const uploadedLabel = s.uploadedQuote ? '上传的报价' : bookSheet ? `价格表「${s.anonymize ? '本客户' : bookSheet.sheet}」` : '';
+  const target = targetPref ?? (uploaded ? 'uploaded' : 'inferred');
   const active: Quote | null = target === 'uploaded' && uploaded ? uploaded : inferred;
-  const checkMask = inf?.mask ?? d.mask;
+  // 价格表有生效日期时，只核对生效日之后的单；否则沿用识别出的最新价格时段
+  const uploadedMask = useMemo(() => {
+    const from = !s.uploadedQuote && bookSheet?.effectiveFrom ? stringToDay(bookSheet.effectiveFrom) : NO_DATE;
+    if (from === NO_DATE || !d.model.day) return inf?.mask ?? d.mask;
+    const out = new Uint8Array(d.model.n);
+    for (let i = 0; i < d.model.n; i++) out[i] = d.mask[i] && d.model.day[i] >= from ? 1 : 0;
+    return out;
+  }, [s.uploadedQuote, bookSheet, d, inf]);
+  const checkMask = target === 'uploaded' && uploaded ? uploadedMask : inf?.mask ?? d.mask;
 
   // 上传的报价也要算各分区覆盖率
   const uploadedWithStats = useMemo(() => {
     if (!uploaded) return null;
     const q = structuredClone(uploaded);
-    attachStats(d.model, checkMask, q);
+    attachStats(d.model, uploadedMask, q);
     return q;
-  }, [uploaded, d.model, checkMask]);
+  }, [uploaded, d.model, uploadedMask]);
   const activeQ = target === 'uploaded' && uploadedWithStats ? uploadedWithStats : active;
 
   const check = useMemo(() => (activeQ ? checkQuote(d.model, activeQ, checkMask) : null), [activeQ, d.model, checkMask]);
@@ -55,6 +79,23 @@ export function QuotePage() {
 
   if (!d.model.caps.quote) {
     return <div className="grid"><Card title="报价还原与核对" span={2}><Empty>需要「目的地」「结算重量」以及「面单收入/中转收入」或「收入」字段才能还原报价。</Empty></Card></div>;
+  }
+  if (custList.length > 1) {
+    const col = d.model.data.dict.customer!;
+    return (
+      <div className="grid">
+        <Card title="请先选择一个结算对象" span={2}>
+          <p>当前筛选范围内有 <b>{custList.length}</b> 个结算对象。每个客户的报价不同，混在一起无法还原和核对报价。</p>
+          <div className="pick-row">
+            <select className="sel" defaultValue="" onChange={(e) => e.target.value !== '' && dispatch({ type: 'filters', filters: { ...s.filters, customers: new Set([Number(e.target.value)]) } })}>
+              <option value="" disabled>选择结算对象…</option>
+              {custList.slice(0, 300).map((c) => <option key={c.code} value={c.code}>{d.nameOf('customer', c.code)}（{fmtInt(c.n)} 单）{sheetOf(s.quoteBook, col.values[c.code]) ? ' ✓有价格表' : ''}</option>)}
+            </select>
+            <button type="button" className="link" onClick={() => dispatch({ type: 'tab', tab: 'customers' })}>或到「客户总览」一次核对所有客户 ›</button>
+          </div>
+        </Card>
+      </div>
+    );
   }
 
   const onUpload = async (f: File | undefined) => {
@@ -152,10 +193,26 @@ export function QuotePage() {
       </Card>
 
       {uploadedWithStats && (
-        <Card title={`上传的报价：${uploadedWithStats.name}`} span={2} exportName="上传报价" actions={<button type="button" className="icon-btn" onClick={() => { dispatch({ type: 'uploadedQuote', quote: null }); setTarget('inferred'); }}>移除</button>}>
+        <Card
+          title={s.uploadedQuote ? `上传的报价：${uploadedWithStats.name}` : `${uploadedLabel}（自动匹配）`}
+          span={2}
+          exportName="客户报价"
+          subtitle={!s.uploadedQuote && bookSheet ? [bookSheet.effectiveFrom && `${bookSheet.effectiveFrom} 起实施`, bookSheet.sheetFee !== undefined && `单号先付 ${bookSheet.sheetFee} 元/单`, '价格已含北京、上海等加收'].filter(Boolean).join('；') : undefined}
+          actions={s.uploadedQuote ? <button type="button" className="icon-btn" onClick={() => { dispatch({ type: 'uploadedQuote', quote: null }); setTarget(null); }}>移除</button> : undefined}
+        >
           <QuoteTable q={uploadedWithStats} />
+          {!s.uploadedQuote && bookSheet && (bookSheet.warnings.length > 0 || bookSheet.specialAreas.length > 0) && (
+            <div className="sheet-notes">
+              {bookSheet.specialAreas.length > 0 && <p className="small"><b>报价单里的地市特价（未单独核对，相关单会显示为多收/少收）：</b>{bookSheet.specialAreas.join('；')}</p>}
+              {bookSheet.warnings.map((w) => <p key={w} className="warn-text small">⚠ {w}</p>)}
+            </div>
+          )}
+          {!s.uploadedQuote && bookSheet && bookSheet.notes.length > 0 && (
+            <details className="small muted"><summary>报价单原文备注</summary>{bookSheet.notes.map((n, k) => <p key={k}>{n}</p>)}</details>
+          )}
         </Card>
       )}
+      <ProvinceNoteList />
 
       {check && t && (
         <Card
@@ -163,8 +220,8 @@ export function QuotePage() {
           metric="coverage"
           span={2}
           exportName="报价核对结果"
-          subtitle={`核对对象：${target === 'uploaded' && uploaded ? '上传的报价' : '系统还原的报价'}；${METRICS.price.note}`}
-          actions={uploaded ? <Seg size="sm" value={target} onChange={setTarget} options={[{ value: 'inferred', label: '对照还原报价' }, { value: 'uploaded', label: '对照上传报价' }]} /> : undefined}
+          subtitle={`核对对象：${target === 'uploaded' && uploaded ? uploadedLabel : '系统还原的报价'}${target === 'uploaded' && bookSheet?.effectiveFrom && !s.uploadedQuote ? `（${bookSheet.effectiveFrom} 起生效，之前的单不参与）` : ''}；${METRICS.price.note}`}
+          actions={uploaded ? <Seg size="sm" value={target} onChange={setTarget} options={[{ value: 'inferred', label: '对照还原报价' }, { value: 'uploaded', label: s.uploadedQuote ? '对照上传报价' : '对照价格表' }]} /> : undefined}
         >
           <div className="kpis">
             <Kpi label="参与核对" value={fmtInt(t.n)} sub="重量、运费都大于 0 的单" />

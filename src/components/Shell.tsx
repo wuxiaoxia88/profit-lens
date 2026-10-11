@@ -9,7 +9,8 @@ import { setThemePref, type ThemePref } from '../app/useTheme';
 import { Tip } from './Tip';
 import { Seg } from './Card';
 
-export const TABS: { id: TabId; label: string; needs?: 'profit' | 'quote' }[] = [
+export const TABS: { id: TabId; label: string; needs?: 'profit' | 'quote' | 'multi' }[] = [
+  { id: 'customers', label: '客户总览', needs: 'multi' },
   { id: 'overview', label: '经营总览' },
   { id: 'matrix', label: '流向 × 重量利润', needs: 'profit' },
   { id: 'structure', label: '结构占比' },
@@ -116,7 +117,7 @@ export function OpCostBar() {
       <div className="opbar-msg">
         <span className="opbar-icon" aria-hidden>⚠</span>
         <div>
-          <b>系统「利润」只是毛利</b>，没有包含网点自己承担的线下操作与管理成本（装卸、分拣人工、场地、管理人员等）。
+          <b>系统「利润」只是毛利</b>，没有包含网点自己承担的线下成本（客服、操作、运输、管理）。默认按 0.35 元/票估算，可按本网点实际修改。
           {unset ? <b className="opbar-hint"> 请先设置线下成本，否则看到的利润偏高。</b> : null}
         </div>
       </div>
@@ -193,7 +194,7 @@ export function FilterBar() {
   const dictOptions = useMemo(() => {
     if (!m) return {} as Record<string, { value: number; label: string; count: number }[]>;
     const out: Record<string, { value: number; label: string; count: number }[]> = {};
-    for (const field of ['account', 'signStatus', 'customer'] as DictField[]) {
+    for (const field of ['account', 'signStatus', 'customer', 'customerType'] as DictField[]) {
       const col = m.data.dict[field];
       if (!col) continue;
       const counts = new Float64Array(col.values.length);
@@ -224,6 +225,7 @@ export function FilterBar() {
             onChange={(e) => { const v = stringToDay(e.target.value); set({ dateTo: v === NO_DATE || v >= m.maxDay ? null : v }); }} />
         </div>
       )}
+      {dictOptions.customerType && dictOptions.customerType.length > 1 && <MultiSelect label="结算对象类型" options={dictOptions.customerType} value={f.customerTypes} onChange={(v) => set({ customerTypes: v })} />}
       {dictOptions.customer && dictOptions.customer.length > 1 && <MultiSelect label="结算对象" options={dictOptions.customer} value={f.customers} onChange={(v) => set({ customers: v })} />}
       {dictOptions.account && <MultiSelect label="面单账号" options={dictOptions.account} value={f.accounts} onChange={(v) => set({ accounts: v })} />}
       {provOptions.length > 0 && <MultiSelect label="流向" options={provOptions} value={f.provinces} onChange={(v) => set({ provinces: v })} />}

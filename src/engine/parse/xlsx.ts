@@ -49,27 +49,42 @@ export function parseSharedStrings(xml: string): string[] {
   return out;
 }
 
-async function firstSheetPath(blob: Blob, entries: ZipEntry[]): Promise<string> {
+export interface SheetRef {
+  name: string;
+  path: string;
+}
+
+/** 按工作簿顺序列出所有工作表（名称 + 内部路径） */
+export async function listSheets(blob: Blob, entries?: ZipEntry[]): Promise<SheetRef[]> {
+  entries ??= await listEntries(blob);
   const byName = new Map(entries.map((e) => [e.name, e]));
   const wb = byName.get('xl/workbook.xml');
   const rels = byName.get('xl/_rels/workbook.xml.rels');
+  const out: SheetRef[] = [];
   if (wb && rels) {
     const wbXml = await readEntryText(blob, wb);
     const relXml = await readEntryText(blob, rels);
-    const sheet = /<sheet\b[^>]*?r:id="([^"]+)"/.exec(wbXml) ?? /<sheet\b[^>]*?\bid="([^"]+)"/.exec(wbXml);
-    if (sheet) {
-      const relRe = new RegExp(`<Relationship\\b[^>]*?Id="${sheet[1]}"[^>]*?Target="([^"]+)"|<Relationship\\b[^>]*?Target="([^"]+)"[^>]*?Id="${sheet[1]}"`);
-      const rel = relRe.exec(relXml);
-      const target = rel?.[1] ?? rel?.[2];
-      if (target) {
-        const path = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
-        if (byName.has(path)) return path;
-      }
+    const targets = new Map<string, string>();
+    for (const m of relXml.matchAll(/<Relationship\b[^>]*>/g)) {
+      const id = /\bId="([^"]+)"/.exec(m[0])?.[1];
+      const target = /\bTarget="([^"]+)"/.exec(m[0])?.[1];
+      if (id && target) targets.set(id, target);
+    }
+    for (const m of wbXml.matchAll(/<sheet\b[^>]*>/g)) {
+      const name = decodeXmlEntities(/\bname="([^"]*)"/.exec(m[0])?.[1] ?? '');
+      const rid = /\br:id="([^"]+)"/.exec(m[0])?.[1] ?? /\bid="([^"]+)"/.exec(m[0])?.[1];
+      const target = rid ? targets.get(rid) : undefined;
+      if (!target) continue;
+      const path = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
+      if (byName.has(path)) out.push({ name, path });
     }
   }
-  const fallback = entries.find((e) => /^xl\/worksheets\/sheet\d*\.xml$/.test(e.name));
-  if (!fallback) throw new Error('xlsx 中找不到工作表');
-  return fallback.name;
+  if (!out.length) {
+    const fallback = entries.filter((e) => /^xl\/worksheets\/sheet\d*\.xml$/.test(e.name));
+    fallback.forEach((e, i) => out.push({ name: `Sheet${i + 1}`, path: e.name }));
+  }
+  if (!out.length) throw new Error('xlsx 中找不到工作表');
+  return out;
 }
 
 function colFromRef(buf: Uint8Array, i: number): number {
@@ -202,11 +217,13 @@ function lastIndexOfRowEnd(buf: Uint8Array): number {
 
 export interface XlsxStreamOptions {
   onProgress?: (fraction: number) => void;
+  /** 指定工作表内部路径（listSheets 返回的 path）；默认第一张 */
+  sheetPath?: string;
 }
 
 export async function streamXlsx(blob: Blob, sink: CellSink, opts: XlsxStreamOptions = {}): Promise<void> {
   const entries = await listEntries(blob);
-  const sheetPath = await firstSheetPath(blob, entries);
+  const sheetPath = opts.sheetPath ?? (await listSheets(blob, entries))[0].path;
   const sheet = entries.find((e) => e.name === sheetPath)!;
   const sstEntry = entries.find((e) => e.name === 'xl/sharedStrings.xml');
   const sst = sstEntry && sstEntry.size > 0 ? parseSharedStrings(await readEntryText(blob, sstEntry)) : [];

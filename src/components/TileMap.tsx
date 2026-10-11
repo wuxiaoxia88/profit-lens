@@ -8,6 +8,8 @@ export interface TileDatum {
   value: number | null;
   label: string; // 方块内第二行文字
   tip: string; // 悬停说明
+  /** 有特殊区域备注 */
+  flag?: boolean;
 }
 
 function lerpColor(a: string, b: string, t: number): string {
@@ -55,6 +57,7 @@ export function TileMap({ data, mode, format }: { data: Record<string, TileDatum
             <g key={p.name} transform={`translate(${p.x * S + G / 2},${p.y * S + G / 2})`} onMouseEnter={() => setHover(p.name)} onMouseLeave={() => setHover(null)}>
               <rect width={S - G} height={S - G} rx={6} fill={bg} stroke={hover === p.name ? t.ink : 'none'} strokeWidth={1.5} />
               <text x={(S - G) / 2} y={24} textAnchor="middle" fontSize={13} fontWeight={600} fill={ink}>{p.name}</text>
+              {d?.flag && <text x={S - G - 5} y={13} textAnchor="end" fontSize={10} fill={ink}>⚑</text>}
               <text x={(S - G) / 2} y={43} textAnchor="middle" fontSize={11} fill={ink}>{d?.label ?? ''}</text>
               <title>{d?.tip ?? `${p.name}：无数据`}</title>
             </g>

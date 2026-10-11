@@ -3,10 +3,12 @@ import { fmtInt, fmtPct, fmtPrice } from '../app/format';
 import { bandLabels } from '../engine/bands';
 import { describeTail, ROUNDING_LABEL, type Quote } from '../engine/quote/types';
 import { Tip } from './Tip';
+import { NOTE_MARK, useProvinceNote } from './ProvinceNotes';
 
 export function QuoteTable({ q, showStats = true }: { q: Quote; showStats?: boolean }) {
   const labels = bandLabels(q.breakpoints).slice(0, q.breakpoints.length);
   const last = q.breakpoints[q.breakpoints.length - 1];
+  const noteOf = useProvinceNote();
   return (
     <div className="tbl-wrap">
       <table className="tbl quote-tbl">
@@ -27,7 +29,7 @@ export function QuoteTable({ q, showStats = true }: { q: Quote; showStats?: bool
             return (
               <tr key={z.id}>
                 <td className="nowrap"><b>{z.name}</b></td>
-                <td className="prov-col">{z.provinces.join('、')}</td>
+                <td className="prov-col">{z.provinces.map((p, k) => <span key={p} title={noteOf(p)}>{k ? '、' : ''}{p}{noteOf(p) ? <em className="flag">{NOTE_MARK}</em> : null}</span>)}</td>
                 {z.prices.map((p, i) => (
                   <td key={i} className={`r num price ${z.tail && q.breakpoints[i - 1] !== undefined && q.breakpoints[i - 1] >= z.tail.start ? 'muted' : ''}`}>
                     {z.tail && (i === 0 ? 0 : q.breakpoints[i - 1]) >= z.tail.start ? '续重' : fmtPrice(p)}

@@ -3,7 +3,7 @@
 import { DatasetBuilder, ProbeSink } from './builder';
 import type { DatasetData } from './dataset';
 import { streamCsv } from './parse/csv';
-import { streamXlsx, type CellSink } from './parse/xlsx';
+import { listSheets, streamXlsx, type CellSink } from './parse/xlsx';
 import { isZip } from './parse/zip';
 import { autoMap, looksLikeHeader, type ColumnMapping } from './schema';
 
@@ -70,4 +70,17 @@ export async function readTable(file: Blob, fileName: string, limit = 5000): Pro
   const sink = new ProbeSink(limit);
   await stream(file, format, sink);
   return sink.rows;
+}
+
+/** 读取整个工作簿的所有工作表（用于多客户报价表） */
+export async function readWorkbook(file: Blob, fileName: string, limitPerSheet = 2000): Promise<{ name: string; rows: string[][] }[]> {
+  const format = await formatOf(file, fileName);
+  if (format === 'csv') return [{ name: fileName.replace(/\.[^.]+$/, ''), rows: await readTable(file, fileName, limitPerSheet) }];
+  const out: { name: string; rows: string[][] }[] = [];
+  for (const sh of await listSheets(file)) {
+    const sink = new ProbeSink(limitPerSheet);
+    await streamXlsx(file, sink, { sheetPath: sh.path });
+    out.push({ name: sh.name.trim(), rows: sink.rows });
+  }
+  return out;
 }

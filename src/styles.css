@@ -332,3 +332,20 @@ button, input, select { font: inherit; color: inherit; }
   .topbar, .opbar, .filterbar, .tabs, .no-export, .band-editor { display: none !important; }
   .card { break-inside: avoid; box-shadow: none; }
 }
+
+/* v0.2：多客户、特殊区域 */
+.province-notes { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 8px 12px; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius); font-size: 12.5px; color: var(--warn-ink); }
+.pn-title { font-weight: 650; }
+.pn-item b { font-weight: 600; }
+.flag { font-style: normal; color: var(--warn-ink); margin-left: 1px; font-size: 11px; }
+.notes-area { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface); font: 13px/1.6 var(--font); resize: vertical; }
+.search-input { border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; background: var(--surface); font-size: 12px; width: 140px; }
+.sel-sm { padding: 2px 4px; font-size: 12px; max-width: 160px; }
+.sel.weak { border-color: var(--warn-line); background: var(--warn-bg); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover, th.sortable.on { color: var(--accent); }
+.cust-tbl td { vertical-align: middle; }
+.pick-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.sheet-notes { margin-top: 8px; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
+.sheet-notes p { margin: 2px 0; }
+details summary { cursor: pointer; margin-top: 6px; }

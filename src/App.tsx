@@ -12,8 +12,9 @@ import { QualityPage } from './pages/QualityPage';
 import { QuotePage } from './pages/QuotePage';
 import { SimPage } from './pages/SimPage';
 import { StructurePage } from './pages/Structure';
+import { CustomersPage } from './pages/CustomersPage';
 
-const REPORT_TABS: TabId[] = ['overview', 'matrix', 'structure', 'quote'];
+const REPORT_TABS: TabId[] = ['customers', 'overview', 'matrix', 'structure', 'quote'];
 
 export function App() {
   const { s, dispatch } = useStore();
@@ -21,7 +22,8 @@ export function App() {
   const importer = useImporter();
   const [exporting, setExporting] = useState<string | null>(null);
   const caps = d?.model.caps;
-  const tabs = TABS.filter((t) => !t.needs || (t.needs === 'profit' ? caps?.profit : caps?.quote));
+  const multi = (d?.model.data.dict.customer?.values.filter(Boolean).length ?? 0) > 1;
+  const tabs = TABS.filter((t) => !t.needs || (t.needs === 'profit' ? caps?.profit : t.needs === 'multi' ? multi && caps?.profit : caps?.quote));
   const tab = d ? (tabs.some((t) => t.id === s.tab) ? s.tab : 'overview') : 'help';
 
   const doPdf = async (which: 'current' | 'full') => {
@@ -71,7 +73,7 @@ export function App() {
                 {!exporting && (
                   <div className="dropdown-menu">
                     <button type="button" onClick={() => void doPdf('current')}>当前页面</button>
-                    <button type="button" onClick={() => void doPdf('full')}>完整报告（总览 + 利润矩阵 + 结构 + 报价）</button>
+                    <button type="button" onClick={() => void doPdf('full')}>完整报告（{multi ? '客户总览 + ' : ''}总览 + 利润矩阵 + 结构 + 报价）</button>
                   </div>
                 )}
               </div>
@@ -99,6 +101,7 @@ export function App() {
       <main className="page">
         {!d && !s.loading && <Welcome importer={importer} />}
         {!d && <HelpLink />}
+        {d && tab === 'customers' && <CustomersPage />}
         {d && tab === 'overview' && <Overview />}
         {d && tab === 'matrix' && <MatrixPage />}
         {d && tab === 'structure' && <StructurePage />}

@@ -7,11 +7,11 @@ import { bandLabels } from '../bands';
 import type { Cell } from '../xlsxWriter';
 import { normalizeProvince } from '../regions';
 import type { PriceBasis } from '../model';
-import { zoneName, type Quote, type QuoteZone, type Rounding } from './types';
+import { originOf, zoneName, type Quote, type QuoteZone, type Rounding } from './types';
 
 const ROUND_TEXT: Record<Rounding, string> = { ceil: '向上取整', exact: '按实重', 'ceil0.5': '向上取整0.5' };
 
-export const TEMPLATE_TAIL_HEADERS = ['续重起点(kg)', '续重基价(元)', '续重单价(元/kg)', '续重取整'];
+export const TEMPLATE_TAIL_HEADERS = ['续重起点(kg)', '续重基价(元)', '续重单价(元/kg)', '续重取整', '续重计重起点(kg)'];
 
 export function quoteToRows(q: Quote): Cell[][] {
   const labels = bandLabels(q.breakpoints).slice(0, q.breakpoints.length);
@@ -26,6 +26,7 @@ export function quoteToRows(q: Quote): Cell[][] {
       z.tail ? z.tail.base : null,
       z.tail ? z.tail.perKg : null,
       z.tail ? ROUND_TEXT[z.tail.rounding] : null,
+      z.tail ? originOf(z.tail) : null,
     ]);
   }
   return rows;
@@ -35,7 +36,8 @@ export const TEMPLATE_GUIDE: Cell[][] = [
   ['报价模板填写说明'],
   ['1. 每行一个分区；同价的省份写在同一行，用顿号「、」分隔。也可以每行只写一个省份。'],
   ['2. 重量段列表示「上一列上限 < 重量 ≤ 本列上限」，单位 kg，填该段的单票运费（元，含面单费）。可以增删重量段列，列名写成「1.2-1.5」或「≤1.2」即可。'],
-  ['3. 超过最后一个重量段，或超过「续重起点」的部分按续重计价：运费 = 续重基价 + 续重单价 × 取整(重量 − 续重起点)。'],
+  ['3. 超过「续重起点」的单按续重计价：运费 = 续重基价 + 续重单价 × 取整(重量 − 续重计重起点)。计重起点不填则等于续重起点。'],
+  ['   例：「3kg以上 = 面单款3元 + 单价 × 整公斤数（从0kg开始）」→ 续重起点 3、基价 3、计重起点 0；「2kg以上 = 首重4元 +（重量−1）× 单价」→ 续重起点 2、基价 4、计重起点 1。'],
   ['4. 续重取整可填：向上取整（按 1kg 进位）、向上取整0.5（按 0.5kg 进位）、按实重（不取整）。不需要续重的分区留空。'],
   ['5. 运费口径 = 面单收入 + 中转收入，不含退件、保价等增值费用。'],
   ['6. 填好后在「报价核对」页点击「上传报价」，系统会逐单比对应收与实收。'],
@@ -70,10 +72,11 @@ export function rowsToQuote(rows: string[][], name: string, basis: PriceBasis = 
   const provCol = header.findIndex((c) => /省份|目的地|流向/.test(c));
   const zoneCol = header.findIndex((c, i) => i !== provCol && /分区|区域|名称/.test(c));
   const tailIdx = {
-    start: header.findIndex((c) => /续重起点/.test(c)),
+    start: header.findIndex((c) => /续重起点/.test(c) && !/计重/.test(c)),
     base: header.findIndex((c) => /续重基价|续重首价|基价/.test(c)),
     perKg: header.findIndex((c) => /续重单价|续重价/.test(c)),
     rounding: header.findIndex((c) => /取整|进位/.test(c)),
+    origin: header.findIndex((c) => /计重起点/.test(c)),
   };
   const tailCols = new Set(Object.values(tailIdx).filter((i) => i >= 0));
   const bandCols: { col: number; upper: number }[] = [];
@@ -97,7 +100,13 @@ export function rowsToQuote(rows: string[][], name: string, basis: PriceBasis = 
     const perKg = tailIdx.perKg >= 0 ? num(r[tailIdx.perKg]) : null;
     const tail =
       base !== null && perKg !== null
-        ? { start: start ?? breakpoints[breakpoints.length - 1], base, perKg, rounding: parseRounding(tailIdx.rounding >= 0 ? r[tailIdx.rounding] ?? '' : '') }
+        ? {
+            start: start ?? breakpoints[breakpoints.length - 1],
+            base,
+            perKg,
+            rounding: parseRounding(tailIdx.rounding >= 0 ? r[tailIdx.rounding] ?? '' : ''),
+            ...(tailIdx.origin >= 0 && num(r[tailIdx.origin]) !== null && num(r[tailIdx.origin]) !== (start ?? breakpoints[breakpoints.length - 1]) ? { origin: num(r[tailIdx.origin])! } : {}),
+          }
         : null;
     zones.push({ id: `u${zones.length + 1}`, name: (zoneCol >= 0 ? r[zoneCol]?.trim() : '') || zoneName(zones.length), provinces, prices, tail });
   }

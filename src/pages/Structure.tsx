@@ -12,6 +12,7 @@ import { bandLabels } from '../engine/bands';
 import { aggregate, quantileWeight, weightBinKey } from '../engine/model';
 import { REGIONS, regionOf } from '../engine/regions';
 import { BandEditor } from './BandEditor';
+import { NOTE_MARK, ProvinceNoteList, useProvinceNote } from '../components/ProvinceNotes';
 
 export function StructurePage() {
   const d = useDerived()!;
@@ -21,6 +22,7 @@ export function StructurePage() {
   const hasProfit = d.model.caps.profit;
   const [tileMetric, setTileMetric] = useState<'share' | 'profit'>('share');
   const [mixMode, setMixMode] = useState<'all' | 'row'>('all');
+  const noteOf = useProvinceNote();
 
   const bands = useMemo(() => bandRows(d, op), [d, op]);
   const provs = useMemo(() => provRows(d, op), [d, op]);
@@ -97,11 +99,12 @@ export function StructurePage() {
       out[p.label] = {
         value: tileMetric === 'share' ? p.share : p.n >= 5 ? unit : null,
         label: tileMetric === 'share' ? fmtPct(p.share) : p.n >= 5 ? unit.toFixed(2) : '样本少',
-        tip: `${p.label}（${regionOf(p.label)}）：${fmtInt(p.n)} 单，占 ${fmtPct(p.share, 2)}，均重 ${fmtKg(p.avgW)}kg` + (hasProfit ? `，单票毛利 ${fmtUnit(p.unitProfit)}${opSet ? `，单票纯利 ${fmtUnit(p.unitNet)}` : ''}` : ''),
+        tip: `${p.label}（${regionOf(p.label)}）：${fmtInt(p.n)} 单，占 ${fmtPct(p.share, 2)}，均重 ${fmtKg(p.avgW)}kg` + (hasProfit ? `，单票毛利 ${fmtUnit(p.unitProfit)}${opSet ? `，单票纯利 ${fmtUnit(p.unitNet)}` : ''}` : '') + (noteOf(p.label) ? `　${NOTE_MARK} ${noteOf(p.label)}` : ''),
+        flag: !!noteOf(p.label),
       };
     }
     return out;
-  }, [provs, tileMetric, opSet, hasProfit]);
+  }, [provs, tileMetric, opSet, hasProfit, noteOf]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const provBar = useCallback((t: Theme) => {
     const rows = provs.filter((p) => p.n > 0).sort((a, b) => b.n - a.n);
@@ -185,6 +188,7 @@ export function StructurePage() {
   return (
     <div className="grid">
       <BandEditor />
+      <ProvinceNoteList />
       <Card title="重量结构" subtitle="把握客户货物的轻重：报价时重量段越贴近实际分布越准" span={2} className="kpi-card">
         <div className="kpis">
           <Kpi label="平均结算重量" metric="avgWeight" value={fmtKg(avgW) + ' kg'} />

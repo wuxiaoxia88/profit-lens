@@ -12,6 +12,7 @@ import { aggregate, quantileWeight, weightBinKey } from '../engine/model';
 import { regionOf } from '../engine/regions';
 import { writeXlsx } from '../engine/xlsxWriter';
 import { BandEditor } from './BandEditor';
+import { NOTE_MARK, ProvinceNoteList, useProvinceNote } from '../components/ProvinceNotes';
 
 type MetricKey = 'unitProfit' | 'unitNet' | 'profit' | 'net' | 'margin' | 'n' | 'unitIncome' | 'unitCost';
 const METRIC_OPTS: { value: MetricKey; label: string; money?: boolean; diverging?: boolean; tip: string }[] = [
@@ -37,6 +38,8 @@ export function MatrixPage() {
   const [sortBy, setSortBy] = useState<'n' | 'region'>('n');
   const [rankBy, setRankBy] = useState<'total' | 'unit'>('total');
   const minN = 5;
+  const noteOf = useProvinceNote();
+  const noteHtml = (p: string) => (noteOf(p) ? `<br/><span style="color:#b45309">${NOTE_MARK} ${noteOf(p)}</span>` : '');
 
   const bands = useMemo(() => bandRows(d, op), [d, op]);
   const provs = useMemo(() => provRows(d, op), [d, op]);
@@ -81,11 +84,11 @@ export function MatrixPage() {
           const [b, yi] = p.value;
           const c = matrix[provOrder[yi]][b];
           if (!c.n) return `${d.model.provNames[provOrder[yi]]} · ${labels[b]}kg<br/>无数据`;
-          return `<b>${d.model.provNames[provOrder[yi]]} · ${labels[b]}kg</b><br/>票数 ${fmtInt(c.n)}（占 ${fmtPct(c.share, 2)}）<br/>单票收入 ${fmtUnit(c.unitIncome)}　单票成本 ${fmtUnit(c.unitCost)}<br/>单票毛利 <b>${fmtUnit(c.unitProfit)}</b>　毛利率 ${fmtPct(c.margin)}${opSet ? `<br/>单票纯利 <b>${fmtUnit(c.unitNet)}</b>` : ''}<br/>亏损票 ${fmtPct(c.lossN / c.n)}${c.n < minN ? '<br/><i>样本少于 5 单，仅供参考</i>' : ''}`;
+          return `<b>${d.model.provNames[provOrder[yi]]} · ${labels[b]}kg</b><br/>票数 ${fmtInt(c.n)}（占 ${fmtPct(c.share, 2)}）<br/>单票收入 ${fmtUnit(c.unitIncome)}　单票成本 ${fmtUnit(c.unitCost)}<br/>单票毛利 <b>${fmtUnit(c.unitProfit)}</b>　毛利率 ${fmtPct(c.margin)}${opSet ? `<br/>单票纯利 <b>${fmtUnit(c.unitNet)}</b>` : ''}<br/>亏损票 ${fmtPct(c.lossN / c.n)}${c.n < minN ? '<br/><i>样本少于 5 单，仅供参考</i>' : ''}${noteHtml(d.model.provNames[provOrder[yi]])}`;
         },
       },
       xAxis: { type: 'category', data: labels.map((l) => l + 'kg'), position: 'top', ...axisStyle(t), splitArea: { show: false }, axisLabel: { color: t.ink2, fontSize: 11 } },
-      yAxis: { type: 'category', data: provOrder.map((p) => d.model.provNames[p]), inverse: true, ...axisStyle(t), axisLabel: { color: t.ink2, fontSize: 11 } },
+      yAxis: { type: 'category', data: provOrder.map((p) => d.model.provNames[p] + (noteOf(d.model.provNames[p]) ? ' ' + NOTE_MARK : '')), inverse: true, ...axisStyle(t), axisLabel: { color: t.ink2, fontSize: 11 } },
       visualMap: { ...visualMap, text: [fmtMetric(metric, visualMap.max), fmtMetric(metric, visualMap.min)], calculable: false, orient: 'horizontal', left: 'center', bottom: 4, itemHeight: 220, itemWidth: 12, textStyle: { color: t.muted, fontSize: 11 }, formatter: (v: number) => fmtMetric(metric, v) },
       series: [{
         type: 'heatmap',
@@ -100,7 +103,7 @@ export function MatrixPage() {
         label: { show: true, fontSize: 10, color: t.ink, formatter: (p: { value: [number, number, number | '-'] }) => (p.value[2] === '-' ? '' : fmtMetric(metric, p.value[2] as number)) },
       }],
     };
-  }, [matrix, provOrder, metric, labels, opSet, d.model.provNames]);
+  }, [matrix, provOrder, metric, labels, opSet, d.model.provNames, noteOf]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const bandChart = useCallback((t: Theme) => {
     const o = baseOption(t);
@@ -135,10 +138,10 @@ export function MatrixPage() {
       grid: { left: 8, right: 56, top: 8, bottom: 8, containLabel: true },
       tooltip: { ...(o.tooltip as object), trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: (ps: { dataIndex: number }[]) => {
         const r = rows[ps[0].dataIndex];
-        return `<b>${r.label}</b>（${regionOf(r.label)}）<br/>${fmtInt(r.n)} 单，占 ${fmtPct(r.share)}<br/>总毛利 ${fmtMoney(r.profit)}　单票毛利 ${fmtUnit(r.unitProfit)}${opSet ? `<br/>总纯利 ${fmtMoney(r.net)}　单票纯利 ${fmtUnit(r.unitNet)}` : ''}`;
+        return `<b>${r.label}</b>（${regionOf(r.label)}）<br/>${fmtInt(r.n)} 单，占 ${fmtPct(r.share)}<br/>总毛利 ${fmtMoney(r.profit)}　单票毛利 ${fmtUnit(r.unitProfit)}${opSet ? `<br/>总纯利 ${fmtMoney(r.net)}　单票纯利 ${fmtUnit(r.unitNet)}` : ''}${noteHtml(r.label)}`;
       } },
       xAxis: { type: 'value', ...axisStyle(t), name: rankBy === 'total' ? '元' : '元/票' },
-      yAxis: { type: 'category', data: rows.map((r) => r.label), inverse: true, ...axisStyle(t), splitLine: { show: false }, axisLabel: { color: t.ink2, fontSize: 11, interval: 0 } },
+      yAxis: { type: 'category', data: rows.map((r) => r.label + (noteOf(r.label) ? ' ' + NOTE_MARK : '')), inverse: true, ...axisStyle(t), splitLine: { show: false }, axisLabel: { color: t.ink2, fontSize: 11, interval: 0 } },
       series: [{
         type: 'bar', data: rows.map((r) => +(r[key] as number).toFixed(3)), barMaxWidth: 14,
         itemStyle: { color: (p: { value: number }) => (p.value < 0 ? t.div.neg[1] : t.series[0]), borderRadius: 3 },
@@ -220,7 +223,7 @@ export function MatrixPage() {
       grid: { left: 8, right: 24, top: 24, bottom: 8, containLabel: true },
       tooltip: { ...(o.tooltip as object), formatter: (p: { dataIndex: number }) => {
         const r = rows[p.dataIndex];
-        return `<b>${r.label}</b><br/>票量占比 ${fmtPct(r.share, 2)}<br/>${opSet ? '单票纯利' : '单票毛利'} ${fmtUnit(r[key] as number)}<br/>${opSet ? '总纯利' : '总毛利'} ${fmtMoney(opSet ? r.net : r.profit)}`;
+        return `<b>${r.label}</b><br/>票量占比 ${fmtPct(r.share, 2)}<br/>${opSet ? '单票纯利' : '单票毛利'} ${fmtUnit(r[key] as number)}<br/>${opSet ? '总纯利' : '总毛利'} ${fmtMoney(opSet ? r.net : r.profit)}${noteHtml(r.label)}`;
       } },
       xAxis: { type: 'log', name: '票量占比', ...axisStyle(t), axisLabel: { color: t.muted, fontSize: 11, formatter: (v: number) => fmtPct(v, v < 0.01 ? 1 : 0) } },
       yAxis: { type: 'value', name: opSet ? '单票纯利' : '单票毛利', ...axisStyle(t) },
@@ -254,6 +257,7 @@ export function MatrixPage() {
   return (
     <div className="grid">
       <BandEditor />
+      <ProvinceNoteList />
       <Card
         title={`流向 × 重量段：${def.label}`}
         metric={def.tip}
