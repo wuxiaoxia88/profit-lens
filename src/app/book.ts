@@ -1,7 +1,10 @@
-// 多客户报价工作簿：上传解析、自动匹配结算对象、按筛选范围一次核对所有客户。
+// 多客户报价核对：有价格表的客户用价格表，没有的用系统实际收费还原的报价；
+// 「以系统为准」的省份（默认北京）偏离报价不计差异。
 import { useMemo } from 'react';
 import { readWorkbook } from '../engine/load';
+import { inferPerCustomer } from '../engine/quote/compose';
 import { checkCustomers, type CustomerCheck, type CustomerQuote, type MultiCheckResult } from '../engine/quote/multi';
+import type { Quote } from '../engine/quote/types';
 import { matchSheetsToCustomers, parseQuoteWorkbook, type ParsedSheet } from '../engine/quote/workbook';
 import type { Model } from '../engine/model';
 import { useDerived, useStore, type QuoteBook } from './store';
@@ -22,23 +25,35 @@ export function sheetOf(book: QuoteBook | null, customer: string): ParsedSheet |
   return name ? book!.sheets.find((s) => s.sheet === name && s.quote) : undefined;
 }
 
-export interface BookCheck extends MultiCheckResult {
+export interface CustomerCheckBundle extends MultiCheckResult {
   byCode: Map<number, CustomerCheck>;
+  /** 系统还原的各客户报价（没有价格表的客户用它核对，也用于导出补全价格表） */
+  inferred: Map<number, Quote>;
 }
 
-export function useBookCheck(): BookCheck | null {
+export function useCustomerCheck(): CustomerCheckBundle | null {
   const d = useDerived();
   const { s } = useStore();
   const book = s.quoteBook;
+  const sysProv = s.systemProvinces;
+  const inferred = useMemo(() => {
+    const cust = d?.model.data.dict.customer;
+    if (!d || !cust || !d.model.caps.quote) return null;
+    const seen = new Uint8Array(cust.values.length);
+    for (let i = 0; i < d.model.n; i++) if (d.mask[i]) seen[cust.codes[i]] = 1;
+    const codes = cust.values.map((_, c) => c).filter((c) => seen[c] && cust.values[c]);
+    return inferPerCustomer(d.model, d.mask, codes);
+  }, [d]);
   return useMemo(() => {
-    if (!d || !book || !d.model.data.dict.customer) return null;
+    if (!d || !inferred || !d.model.data.dict.customer) return null;
     const cust = d.model.data.dict.customer;
     const assign = new Map<number, CustomerQuote>();
     cust.values.forEach((name, code) => {
       const sh = sheetOf(book, name);
-      if (sh?.quote) assign.set(code, { sheet: sh.sheet, quote: sh.quote, effectiveFrom: sh.effectiveFrom });
+      if (sh?.quote) assign.set(code, { sheet: sh.sheet, quote: sh.quote, effectiveFrom: sh.effectiveFrom, source: 'sheet' });
+      else if (inferred.has(code)) assign.set(code, { sheet: '系统还原', quote: inferred.get(code)!, source: 'system' });
     });
-    const r = checkCustomers(d.model, d.mask, assign);
-    return { ...r, byCode: new Map(r.byCustomer.map((c) => [c.code, c])) };
-  }, [d, book]);
+    const r = checkCustomers(d.model, d.mask, assign, sysProv);
+    return { ...r, byCode: new Map(r.byCustomer.map((c) => [c.code, c])), inferred };
+  }, [d, book, inferred, sysProv]);
 }

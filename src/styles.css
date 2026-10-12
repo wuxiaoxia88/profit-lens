@@ -349,3 +349,13 @@ th.sortable:hover, th.sortable.on { color: var(--accent); }
 .sheet-notes { margin-top: 8px; padding: 8px 10px; background: var(--surface-2); border-radius: 8px; }
 .sheet-notes p { margin: 2px 0; }
 details summary { cursor: pointer; margin-top: 6px; }
+.sys-prov { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-size: 12px; color: var(--ink-2); }
+.sys-prov input { width: 110px; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; background: var(--surface); font-size: 12px; }
+.pn-head { display: flex; align-items: center; gap: 10px; width: 100%; }
+.pn-brief { width: 100%; }
+.pn-list { list-style: none; margin: 4px 0 0; padding: 0; width: 100%; display: grid; gap: 4px; }
+.pn-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.pn-list li b { min-width: 3.5em; }
+.pn-note { display: inline-flex; gap: 4px; align-items: baseline; }
+.pn-src { font-style: normal; font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--surface); border: 1px solid var(--warn-line); }
+.pn-src.pn-数据 { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }

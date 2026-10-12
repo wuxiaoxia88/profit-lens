@@ -179,3 +179,17 @@ describe('调价识别', () => {
     expect(ps[1].from).toBe(mid);
   });
 });
+
+import { analyzeDispatch } from '../src/engine/specialAreas';
+describe('特殊区域分析', () => {
+  it('省内少量高派费单（海岛）能被识别，正常省份不误报', () => {
+    const d = generateDemo(40000, 3);
+    const dest = d.dict.dest!;
+    const zj = dest.values.indexOf('浙江');
+    let k = 0;
+    for (let i = 0; i < d.n; i++) if (dest.codes[i] === zj && d.num.weight![i] > 0.3 && d.num.weight![i] <= 1 && k++ % 40 === 0) d.num.cDispatch![i] += 1.5;
+    const f = analyzeDispatch(buildModel(d));
+    expect(f.some((x) => x.province === '浙江' && x.kind === 'tail')).toBe(true);
+    expect(f.some((x) => x.province === '河南')).toBe(false);
+  });
+});

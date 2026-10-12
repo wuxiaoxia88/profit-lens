@@ -9,9 +9,16 @@ export const CheckStatus = {
   Under: 2, // 实收 < 应收（少收）
   NoQuote: 3, // 报价里没有这个省份 / 重量段
   Skipped: 4, // 不在筛选范围，或重量/运费为 0 的异常单
+  System: 5, // 该省份以系统实际收费为准（如北京加收），不计差异
 } as const;
 
-export const STATUS_LABEL = ['一致', '多收', '少收', '无报价', '未参与'];
+export const STATUS_LABEL = ['一致', '多收', '少收', '无报价', '未参与', '以系统为准'];
+
+/** 省份序号 → 是否以系统收费为准 */
+export function systemMask(m: Model, provinces: string[]): Uint8Array {
+  const set = new Set(provinces);
+  return Uint8Array.from(m.provNames, (p) => (set.has(p) ? 1 : 0));
+}
 
 /** 省份序号 → 分区序号（-1 = 报价未覆盖） */
 export function zoneOfProvince(m: Model, q: Quote): Int32Array {
@@ -44,6 +51,8 @@ export interface CheckCell {
   over: number;
   under: number;
   noQuote: number;
+  /** 以系统为准的省份：报价不同也不计差异 */
+  system: number;
   diff: number; // Σ(实收 − 应收)
 }
 
@@ -57,9 +66,11 @@ export interface CheckResult {
   cells: CheckCell[][];
 }
 
-const emptyCell = (): CheckCell => ({ n: 0, match: 0, over: 0, under: 0, noQuote: 0, diff: 0 });
+const emptyCell = (): CheckCell => ({ n: 0, match: 0, over: 0, under: 0, noQuote: 0, system: 0, diff: 0 });
 
-export function checkQuote(m: Model, q: Quote, mask: Uint8Array): CheckResult {
+/** systemProvinces：这些省份以系统实际收费为准，偏离报价的单记为「以系统为准」而不是多收/少收 */
+export function checkQuote(m: Model, q: Quote, mask: Uint8Array, systemProvinces: string[] = []): CheckResult {
+  const sys = systemMask(m, systemProvinces);
   const zones = rowZones(m, q);
   const expected = expectedPrices(m, q, zones);
   const bands = computeBands(m.cols.weight!, q.breakpoints);
@@ -75,8 +86,12 @@ export function checkQuote(m: Model, q: Quote, mask: Uint8Array): CheckResult {
     const cell = cells[z < 0 ? q.zones.length : z][bands[i]];
     cell.n++; total.n++;
     const e = expected[i];
-    if (e !== e) { status[i] = CheckStatus.NoQuote; cell.noQuote++; total.noQuote++; continue; }
+    if (e !== e) {
+      if (sys[m.prov[i]]) { status[i] = CheckStatus.System; cell.system++; total.system++; continue; }
+      status[i] = CheckStatus.NoQuote; cell.noQuote++; total.noQuote++; continue;
+    }
     const d = price[i] - e;
+    if (sys[m.prov[i]] && Math.abs(d) > PRICE_TOL) { status[i] = CheckStatus.System; cell.system++; total.system++; continue; }
     if (d > PRICE_TOL) { status[i] = CheckStatus.Over; cell.over++; total.over++; }
     else if (d < -PRICE_TOL) { status[i] = CheckStatus.Under; cell.under++; total.under++; }
     else { status[i] = CheckStatus.Match; cell.match++; total.match++; }

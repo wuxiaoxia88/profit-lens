@@ -1,16 +1,18 @@
 // 客户总览：一份导出里有多个结算对象时，先看全网点：谁赚钱、谁亏钱、报价是否执行到位。
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { rowsOf, type GroupRow } from '../app/analysis';
-import { loadQuoteBook, useBookCheck } from '../app/book';
+import { loadQuoteBook, useCustomerCheck } from '../app/book';
 import { downloadXlsx } from '../app/exporter';
 import { fmtInt, fmtKg, fmtMoney, fmtPct, fmtUnit } from '../app/format';
 import { useDerived, useStore } from '../app/store';
 import type { Theme } from '../app/theme';
-import { Card, Empty, Kpi } from '../components/Card';
+import { Card, Kpi } from '../components/Card';
 import { axisStyle, baseOption, Chart } from '../components/Chart';
 import { Tip } from '../components/Tip';
 import { aggregate, DEFAULT_FILTERS } from '../engine/model';
-import { writeXlsx, type Cell } from '../engine/xlsxWriter';
+import { writeXlsx, type Cell, type SheetSpec } from '../engine/xlsxWriter';
+import { quoteToSheetRows } from '../engine/quote/sheetExport';
+import { SystemProvinceEditor } from '../components/SystemProvinceEditor';
 
 interface CustRow extends GroupRow {
   name: string;
@@ -24,7 +26,7 @@ export function CustomersPage() {
   const { s, dispatch } = useStore();
   const op = s.opCost;
   const book = s.quoteBook;
-  const check = useBookCheck();
+  const check = useCustomerCheck();
   const [sortKey, setSortKey] = useState<SortKey>('n');
   const [q, setQ] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -57,15 +59,20 @@ export function CustomersPage() {
   const lossCust = rows.filter((r) => r.net < 0);
   const lossTickets = lossCust.reduce((a, r) => a + r.n, 0);
 
-  const bookTotals = useMemo(() => {
+  // 按核对依据分开汇总：价格表 / 系统还原；「以系统为准」的单算作一致
+  const totalsBy = useMemo(() => {
+    const empty = () => ({ customers: 0, n: 0, checked: 0, match: 0, system: 0, under: 0, underAmt: 0, over: 0, overAmt: 0 });
+    const t = { sheet: empty(), system: empty() };
     if (!check) return null;
-    const t = { customers: 0, n: 0, checked: 0, match: 0, under: 0, underAmt: 0, over: 0, overAmt: 0 };
     for (const c of check.byCustomer) {
       if (!c.n) continue;
-      t.customers++; t.n += c.n; t.checked += c.checked; t.match += c.match; t.under += c.under; t.underAmt += c.underAmt; t.over += c.over; t.overAmt += c.overAmt;
+      const x = t[c.source];
+      x.customers++; x.n += c.n; x.checked += c.checked; x.match += c.match; x.system += c.system;
+      x.under += c.under; x.underAmt += c.underAmt; x.over += c.over; x.overAmt += c.overAmt;
     }
     return t;
   }, [check]);
+  const okRate = (c: { checked: number; match: number; system: number }) => (c.checked ? (c.match + c.system) / c.checked : NaN);
 
   const sorted = useMemo(() => {
     const kw = q.trim();
@@ -77,8 +84,8 @@ export function CustomersPage() {
         case 'net': return r.net;
         case 'unitNet': return r.unitNet;
         case 'unitProfit': return r.unitProfit;
-        case 'under': return -(c?.underAmt ?? -1);
-        case 'match': return c && c.checked ? c.match / c.checked : 2;
+        case 'under': return c?.source === 'sheet' ? -c.underAmt : 1;
+        case 'match': return c?.source === 'sheet' && c.checked ? (c.match + c.system) / c.checked : 2;
       }
     };
     return [...list].sort((a, b) => val(a) - val(b));
@@ -145,17 +152,37 @@ export function CustomersPage() {
   }, [rows]);
 
   const exportTable = () => {
-    const head: Cell[] = ['结算对象', '类型', '票数', '票量占比', '平均重量', '单票收入', '单票成本', '单票毛利', '总毛利', '线下成本', '总纯利', '单票纯利', '亏损票数', '报价表', '参与核对', '一致率', '少收单数', '少收金额', '多收单数', '多收金额'];
+    const head: Cell[] = ['结算对象', '类型', '票数', '票量占比', '平均重量', '单票收入', '单票成本', '单票毛利', '总毛利', '线下成本', '总纯利', '单票纯利', '亏损票数', '核对依据', '参与核对', '一致率', '少收单数', '少收金额', '多收单数', '多收金额'];
     const out: Cell[][] = [head];
     for (const r of sorted) {
       const c = check?.byCode.get(r.key);
       out.push([r.name, r.type, r.n, +r.share.toFixed(5), +r.avgW.toFixed(3), +r.unitIncome.toFixed(4), +r.unitCost.toFixed(4), +r.unitProfit.toFixed(4), +r.profit.toFixed(2), +r.opc.toFixed(2), +r.net.toFixed(2), +r.unitNet.toFixed(4), r.lossN,
-        c?.sheet ?? '', c?.checked ?? null, c && c.checked ? +(c.match / c.checked).toFixed(4) : null, c?.under ?? null, c ? +c.underAmt.toFixed(2) : null, c?.over ?? null, c ? +c.overAmt.toFixed(2) : null]);
+        c ? (c.source === 'sheet' ? c.sheet : '系统收费') : '', c?.checked ?? null, c && c.checked ? +((c.match + c.system) / c.checked).toFixed(4) : null, c?.under ?? null, c ? +c.underAmt.toFixed(2) : null, c?.over ?? null, c ? +c.overAmt.toFixed(2) : null]);
     }
     downloadXlsx(writeXlsx([{ name: '客户盈亏', rows: out, colWidths: [22, 10, 9, 9, 8, 9, 9, 9, 11, 10, 11, 9, 9, 18, 9, 8, 9, 10, 9, 10] }]), '客户盈亏与报价核对');
   };
 
   const usableSheets = book ? book.sheets.filter((x) => x.quote).map((x) => x.sheet) : [];
+  const missing = useMemo(() => (check ? check.byCustomer.filter((c) => c.source === 'system' && c.n >= 30).sort((a, b) => b.n - a.n) : []), [check]);
+  const exportMissing = () => {
+    if (!check) return;
+    const used = new Set<string>();
+    const sheets: SheetSpec[] = [];
+    const index: Cell[][] = [['结算对象', '类型', '票数', '单号先付（系统众数）', '还原一致率', '说明']];
+    for (const c of missing) {
+      const q = check.inferred.get(c.code);
+      if (!q) continue;
+      const name = d.nameOf('customer', c.code);
+      let sheetName = name.replace(/[\\/?*[\]:]/g, '').slice(0, 28) || `客户${c.code}`;
+      while (used.has(sheetName)) sheetName = sheetName.slice(0, 26) + '_' + used.size;
+      used.add(sheetName);
+      const { rows: r, warnings } = quoteToSheetRows(q, { title: `${name}中通快递价格表（按系统实际收费还原，待核对）`, sheetFee: q.sheetFee, note: `${new Date().toLocaleDateString('zh-CN')} 由盈亏透镜根据 ${fmtInt(c.n)} 单系统实收数据还原` });
+      sheets.push({ name: sheetName, rows: r, colWidths: [10, 11, 11, 11, 11, 11, 11, 14, 16] });
+      const row = rows.find((x) => x.key === c.code);
+      index.push([name, row?.type ?? '', c.n, q.sheetFee ?? null, c.checked ? +((c.match + c.system) / c.checked).toFixed(4) : null, warnings.join('；')]);
+    }
+    downloadXlsx(writeXlsx([{ name: '说明', rows: [['以下客户没有价格表，按系统实际收费还原报价。请与客户核对后再并入价格表。'], [], ...index], colWidths: [24, 10, 9, 14, 12, 80] }, ...sheets]), '补全价格表（系统还原）');
+  };
   const assignedCount = book ? Object.keys(book.assign).length : 0;
   // 单票收入不到整体一半的类型（如「无对象」）：收入大多不在本系统结算，会拉低整体利润
   const avgIncome = rows.reduce((a, r) => a + r.income, 0) / Math.max(1, total.n);
@@ -197,34 +224,38 @@ export function CustomersPage() {
       </Card>
 
       <Card
-        title="报价表核对（多客户）"
+        title="报价执行核对（全部客户）"
         metric="coverage"
         span={2}
         exportName="多客户报价核对"
-        subtitle={book ? `报价表：${book.fileName}，识别 ${usableSheets.length} 个客户报价，已匹配 ${assignedCount} 个结算对象（可在下方明细表里改）` : '上传网点的客户价格表（一个工作表一个客户），自动匹配结算对象并逐单核对实收运费是否按报价执行'}
+        subtitle={
+          <>
+            有价格表的客户按价格表核对{book ? `（${book.fileName}，已匹配 ${assignedCount} 个结算对象，可在明细表里改）` : ''}；没有价格表的客户以系统实际收费为准，按其收费规律找出异常单。
+            <SystemProvinceEditor />
+          </>
+        }
         actions={
           <>
-            <button type="button" className="icon-btn" onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? '解析中…' : book ? '⤒ 重新上传' : '⤒ 上传价格表'}</button>
+            <button type="button" className="icon-btn" onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? '解析中…' : book ? '⤒ 重新上传价格表' : '⤒ 上传价格表'}</button>
             {book && <button type="button" className="icon-btn" onClick={() => dispatch({ type: 'quoteBook', book: null })}>移除</button>}
+            <button type="button" className="icon-btn" onClick={exportMissing} disabled={!missing.length} title="把没有价格表的客户按系统实际收费还原成报价，按价格表版式导出，可直接贴进价格表">⤓ 补全价格表（{missing.length}）</button>
             <input ref={fileRef} type="file" accept=".xlsx" hidden onChange={(e) => { void onUpload(e.target.files?.[0]); e.target.value = ''; }} />
           </>
         }
       >
         {err && <p className="error-text">{err}</p>}
-        {bookTotals ? (
-          <>
-            <div className="kpis">
-              <Kpi label="已核对客户" value={`${bookTotals.customers} 个`} sub={`覆盖 ${fmtPct(bookTotals.n / Math.max(1, total.n))} 票量`} />
-              <Kpi label="一致率" metric="coverage" value={fmtPct(bookTotals.match / Math.max(1, bookTotals.checked), 2)} sub={`${fmtInt(bookTotals.checked)} 单参与核对`} tone={bookTotals.match / Math.max(1, bookTotals.checked) < 0.99 ? 'warn' : 'pos'} />
-              <Kpi label="少收（实收 < 报价）" value={fmtMoney(bookTotals.underAmt)} sub={`${fmtInt(bookTotals.under)} 单`} tone={bookTotals.underAmt > 0 ? 'neg' : undefined} />
-              <Kpi label="多收（实收 > 报价）" value={fmtMoney(bookTotals.overAmt)} sub={`${fmtInt(bookTotals.over)} 单`} tone={bookTotals.overAmt > 0 ? 'warn' : undefined} />
-            </div>
-            {book!.weak.length > 0 && <p className="warn-text small">⚠ 这些结算对象只按括号里的别名匹配到报价表，请在明细表里确认：{book!.weak.join('、')}</p>}
-            <p className="muted small">按「少收金额」排序可快速找到报价没有执行到位的客户；点「查看」进入该客户的报价核对页看逐单明细和原因。</p>
-          </>
-        ) : (
-          <Empty>还没有上传价格表。支持网点常见的两种报价单格式（按省份逐行、按省份分组），一个工作表一个客户。</Empty>
+        {totalsBy && (
+          <div className="kpis">
+            <Kpi label="按价格表核对" value={`${totalsBy.sheet.customers} 个客户`} sub={totalsBy.sheet.customers ? `${fmtPct(totalsBy.sheet.n / Math.max(1, total.n))} 票量，一致 ${fmtPct(okRate(totalsBy.sheet), 2)}` : '尚未上传价格表'} />
+            <Kpi label="少收（实收 < 价格表）" value={fmtMoney(totalsBy.sheet.underAmt)} sub={`${fmtInt(totalsBy.sheet.under)} 单`} tone={totalsBy.sheet.underAmt > 0.005 ? 'neg' : undefined} />
+            <Kpi label="多收（实收 > 价格表）" value={fmtMoney(totalsBy.sheet.overAmt)} sub={`${fmtInt(totalsBy.sheet.over)} 单`} tone={totalsBy.sheet.overAmt > 0.005 ? 'warn' : undefined} />
+            <Kpi label="无价格表（以系统为准）" value={`${totalsBy.system.customers} 个客户`} sub={`${fmtPct(totalsBy.system.n / Math.max(1, total.n))} 票量，按系统实收计，不计多收少收`} />
+            <Kpi label="收费规律外的单（参考）" value={fmtInt(totalsBy.system.under + totalsBy.system.over)} sub={`无价格表客户中偏离自身收费规律的单，常见原因是中转费未入账`} />
+            <Kpi label="以系统为准的省份" value={fmtInt(totalsBy.sheet.system)} sub={`${s.systemProvinces.join('、') || '无'} 与价格表不同的单，不计差异`} />
+          </div>
         )}
+        {book && book.weak.length > 0 && <p className="warn-text small">⚠ 这些结算对象只按括号里的别名匹配到价格表，请在明细表里确认：{book.weak.join('、')}</p>}
+        <p className="muted small">按「少收金额」排序可快速找到报价没有执行到位的客户；点「查看」进入该客户的报价核对页看逐单明细。「补全价格表」把没有价格表的客户按系统实际收费还原，按价格表版式导出，核对后可贴进价格表。</p>
       </Card>
 
       <Card title="客户纯利排行（票量前 30）" metric="net" exportName="客户纯利排行">
@@ -256,9 +287,9 @@ export function CustomersPage() {
                 {th('unitProfit', '单票毛利', 'unitProfit')}
                 {th('unitNet', '单票纯利', 'unitNet')}
                 {th('net', '总纯利', 'net')}
-                {book && <th>报价表</th>}
-                {book && th('match', '一致率', 'coverage')}
-                {book && th('under', '少收金额')}
+                <th>核对依据</th>
+                {th('match', '一致率', 'coverage')}
+                {th('under', '少收金额')}
                 <th />
               </tr>
             </thead>
@@ -266,7 +297,7 @@ export function CustomersPage() {
               {sorted.map((r) => {
                 const c = check?.byCode.get(r.key);
                 const custName = cust.values[r.key];
-                const rate = c && c.checked ? c.match / c.checked : NaN;
+                const rate = c && c.checked ? (c.match + c.system) / c.checked : NaN;
                 return (
                   <tr key={r.key}>
                     <td className="nowrap">{r.name}</td>
@@ -277,16 +308,25 @@ export function CustomersPage() {
                     <td className={`r num ${r.unitProfit < 0 ? 'neg' : ''}`}>{fmtUnit(r.unitProfit)}</td>
                     <td className={`r num ${r.unitNet < 0 ? 'neg' : ''}`}>{fmtUnit(r.unitNet)}</td>
                     <td className={`r num ${r.net < 0 ? 'neg' : ''}`}>{fmtMoney(r.net)}</td>
-                    {book && (
-                      <td>
+                    <td>
+                      {book ? (
                         <select className={`sel sel-sm ${book.weak.includes(custName) ? 'weak' : ''}`} value={book.assign[custName] ?? ''} onChange={(e) => dispatch({ type: 'assign', customer: custName, sheet: e.target.value || null })}>
-                          <option value="">（未匹配）</option>
-                          {usableSheets.map((sh) => <option key={sh} value={sh}>{s.anonymize ? '报价表' + (usableSheets.indexOf(sh) + 1) : sh}</option>)}
+                          <option value="">系统收费（无价格表）</option>
+                          {usableSheets.map((sh) => <option key={sh} value={sh}>{s.anonymize ? '价格表' + (usableSheets.indexOf(sh) + 1) : sh}</option>)}
                         </select>
-                      </td>
+                      ) : <span className="muted small">系统收费</span>}
+                    </td>
+                    {c?.source === 'system' ? (
+                      <>
+                        <td className="r muted small" title={`以系统实收为准；偏离其收费规律的单 ${c.under + c.over} 单（仅供参考）`}>以系统为准</td>
+                        <td className="r muted small">{c.under + c.over ? `参考 ${c.under + c.over} 单` : '—'}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className={`r num ${rate < 0.99 ? (rate < 0.9 ? 'cell-bad' : 'cell-warn') : ''}`}>{Number.isFinite(rate) ? fmtPct(rate, rate < 1 && rate > 0.99 ? 2 : 1) : '—'}</td>
+                        <td className={`r num ${c && c.underAmt > 0.005 ? 'neg' : ''}`}>{c ? (c.underAmt > 0.005 ? fmtMoney(c.underAmt) : '0') : '—'}</td>
+                      </>
                     )}
-                    {book && <td className={`r num ${rate < 0.99 ? (rate < 0.9 ? 'cell-bad' : 'cell-warn') : ''}`}>{Number.isFinite(rate) ? fmtPct(rate, rate < 1 && rate > 0.99 ? 2 : 1) : '—'}</td>}
-                    {book && <td className={`r num ${c && c.underAmt > 0.005 ? 'neg' : ''}`}>{c ? (c.underAmt > 0.005 ? fmtMoney(c.underAmt) : '0') : '—'}</td>}
                     <td className="nowrap"><button type="button" className="link" onClick={() => view(r.key)}>查看 ›</button></td>
                   </tr>
                 );

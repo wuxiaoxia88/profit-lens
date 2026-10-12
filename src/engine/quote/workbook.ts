@@ -138,6 +138,8 @@ function parseNotes(notes: string) {
   const firstNote = /首重(\d+(?:\.\d+)?)元(?=\d+(?:\.\d+)?(?:kg|公斤)以上)/i.exec(text);
   const threshold = /(\d+(?:\.\d+)?)kg以上[，,]?(?:价格|为|结算)/i.exec(text) ?? /超(\d+(?:\.\d+)?)公斤以上/.exec(text);
   const rounding: Rounding = /不足0\.5kg按0\.5kg|0\.5kg计算/i.test(text) ? 'ceil0.5' : 'ceil';
+  // 新疆、西藏首重后的续重若写明「按实际重量 / 不取整」
+  const subRounding: Rounding = /(新疆|西藏)[^。；;]*?(按实际重量|按实重|不取整)/.test(text) ? 'exact' : 'ceil';
   // 新藏、偏远省份的「首重 X 元，超重 Y KG 按首重 X、续重 Z 元/公斤」
   const special = new Map<string, Special>();
   for (const m of text.matchAll(/([^。；;\d]{2,30}?)件?首重是?(\d+(?:\.\d+)?)元[，,]?超(?:重|过)(\d+(?:\.\d+)?)(?:KG|kg|公斤)[^。；;]*?续重(\d+(?:\.\d+)?)元\/公斤/g)) {
@@ -147,11 +149,17 @@ function parseNotes(notes: string) {
   for (const m of text.matchAll(/([^。；;\d]{2,30}?)件?超(?:重|过)(\d+(?:\.\d+)?)(?:KG|kg|公斤)[^。；;]*?首重(\d+(?:\.\d+)?)元[，,]?续重(\d+(?:\.\d+)?)元\/公斤/g)) {
     for (const p of provincesIn(m[1].replace(/件$/, ''))) if (!special.has(p)) special.set(p, { firstPrice: Number(m[3]), firstUpTo: Number(m[2]), perKg: Number(m[4]) });
   }
+  // 「北京5KG以上续重加收1元/公斤」「北京件另加收1.5元/票，5公斤以上加收1元/公斤」
+  const steps: Record<string, { above: number; perKgAdd: number }> = {};
+  for (const city of ['北京', '上海']) {
+    const m = new RegExp(`${city}[^。；;]*?(\\d+(?:\\.\\d+)?)(?:KG|kg|公斤)以上(?:续重)?加收(\\d+(?:\\.\\d+)?)元/公斤`).exec(text);
+    if (m) steps[city] = { above: Number(m[1]), perKgAdd: Number(m[2]) };
+  }
   const unsupported: string[] = [];
-  for (const m of text.matchAll(/[^。；;]*?\d+(?:KG|kg|公斤)以上续重加收[^。；;]*/g)) unsupported.push(m[0]);
   for (const m of text.matchAll(/[^。；;]*?每日发件票数[^。；;]*/g)) unsupported.push(m[0]);
   return {
     surcharge,
+    steps,
     sheetFee: sheetFee ? Number(sheetFee) : undefined,
     effective,
     origin,
@@ -159,6 +167,7 @@ function parseNotes(notes: string) {
     firstNote: firstNote ? Number(firstNote[1]) : null,
     threshold: threshold ? Number(threshold[1]) : null,
     rounding,
+    subRounding,
     special,
     unsupported,
     hasFormula: f1 !== null || f2 !== null || /0kg开始|从第一公斤开始续重|首重价格\+续重价格/i.test(text),
@@ -289,7 +298,7 @@ export function parseQuoteSheet(sheet: string, rows: string[][]): ParsedSheet {
     const upTo = sub?.upTo ?? 1;
     const perKg = sr.perKg ?? sr.first;
     for (const p of sr.provinces) {
-      byProv.set(p, { prices: firstBandFor(upTo, sr.first), tail: { start: upTo, base: sr.first, perKg, rounding: nt.rounding, origin: upTo }, region: '', src: { start: 'table', base: 'table', perKg: 'table' } });
+      byProv.set(p, { prices: firstBandFor(upTo, sr.first), tail: { start: upTo, base: sr.first, perKg, rounding: nt.subRounding, origin: upTo }, region: '', src: { start: 'table', base: 'table', perKg: 'table' } });
     }
   }
   // 备注里的「首重 X 元，超重 Y kg 按首重 X、续重 Z 元/公斤」：覆盖按版式推断的部分；与表格明确给出的值冲突时以表格为准并提示
@@ -316,6 +325,10 @@ export function parseQuoteSheet(sheet: string, rows: string[][]): ParsedSheet {
     if (!cur) continue;
     cur.prices = cur.prices.map((v) => (v === null ? null : round2(v + add)));
     if (cur.tail) cur.tail.base = round2(cur.tail.base + add);
+  }
+  for (const [city, st] of Object.entries(nt.steps)) {
+    const cur = byProv.get(city);
+    if (cur?.tail) cur.tail.steps = [st];
   }
   for (const u of nt.unsupported) res.warnings.push(`未纳入核对：${u}`);
   const anyInferred = [...byProv.values()].some((pp) => pp.tail && pp.src.base === 'infer');

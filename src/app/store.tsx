@@ -37,6 +37,8 @@ export interface State {
   periodIdx: number | null;
   loadMs: number;
   provinceNotes: ProvinceNotes;
+  /** 以系统实际收费为准的省份（如北京加收）：核对时不计多收/少收 */
+  systemProvinces: string[];
   /** 上传的多客户报价工作簿；assign：结算对象名 → 工作表名（用户可改） */
   quoteBook: QuoteBook | null;
 }
@@ -63,6 +65,7 @@ type Action =
   | { type: 'simQuote'; quote: Quote | null }
   | { type: 'period'; idx: number | null }
   | { type: 'provinceNotes'; notes: ProvinceNotes }
+  | { type: 'systemProvinces'; provinces: string[] }
   | { type: 'quoteBook'; book: QuoteBook | null }
   | { type: 'assign'; customer: string; sheet: string | null };
 
@@ -96,15 +99,23 @@ const initial: State = {
   periodIdx: null,
   loadMs: 0,
   provinceNotes: loadLS<ProvinceNotes>('provinceNotes', DEFAULT_PROVINCE_NOTES),
+  systemProvinces: loadLS<string[]>('systemProvinces', ['北京']),
   quoteBook: null,
 };
 
 /** 默认分析重量段：用还原出的报价断点（与客户报价一致），再补上常用的大重量分界 */
+/** 多客户数据的默认重量段：网点价格表最常用的分界（首段 0.5/1/1.2，之后 1.5、2、3，再加大货 5、10） */
+export const NETWORK_BREAKPOINTS = [0.5, 1, 1.2, 1.5, 2, 3, 5, 10];
+
 function autoBandsFor(m: Model): number[] {
   if (!m.caps.quote || !m.cols.price) return DEFAULT_BREAKPOINTS;
+  // 多个客户的报价各不相同，混在一起还原没有意义
+  const cust = m.data.dict.customer;
+  if (cust && cust.values.filter(Boolean).length > 1) return NETWORK_BREAKPOINTS;
   try {
     const all = new Uint8Array(m.n).fill(1);
-    const bps = inferQuote(m, all).quote.breakpoints;
+    const bps = inferQuote(m, all, { stats: false }).quote.breakpoints;
+    if (bps.length > 8) return DEFAULT_BREAKPOINTS;
     const extra = [0.5, 1, 5, 10].filter((b) => !bps.some((x) => Math.abs(x - b) < 0.11));
     const merged = [...new Set([...bps, ...extra])].sort((a, b) => a - b);
     return merged.length > 12 ? bps : merged;
@@ -132,6 +143,7 @@ function reducer(s: State, a: Action): State {
     case 'simQuote': return { ...s, simQuote: a.quote };
     case 'period': return { ...s, periodIdx: a.idx };
     case 'provinceNotes': return { ...s, provinceNotes: a.notes };
+    case 'systemProvinces': return { ...s, systemProvinces: a.provinces };
     case 'quoteBook': return { ...s, quoteBook: a.book };
     case 'assign': {
       if (!s.quoteBook) return s;
@@ -155,6 +167,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => saveLS('bands', s.bandsOverride), [s.bandsOverride]);
   useEffect(() => saveLS('anonymize', s.anonymize), [s.anonymize]);
   useEffect(() => saveLS('provinceNotes', s.provinceNotes), [s.provinceNotes]);
+  useEffect(() => saveLS('systemProvinces', s.systemProvinces), [s.systemProvinces]);
   const value = useMemo(() => ({ s, dispatch }), [s]);
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;
 }

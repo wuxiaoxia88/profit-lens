@@ -1,6 +1,6 @@
 {
   "name": "profit-lens",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "盈亏透镜：快递网点客户发件盈亏分析与报价决策工具（纯浏览器本地运行）",
   "type": "module",

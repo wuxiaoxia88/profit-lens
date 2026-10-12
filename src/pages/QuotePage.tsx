@@ -16,6 +16,8 @@ import { quoteToRows, rowsToQuote, TEMPLATE_GUIDE } from '../engine/quote/templa
 import type { Quote } from '../engine/quote/types';
 import { writeXlsx, type Cell } from '../engine/xlsxWriter';
 import { sheetOf } from '../app/book';
+import { quoteToSheetRows } from '../engine/quote/sheetExport';
+import { SystemProvinceEditor } from '../components/SystemProvinceEditor';
 import { NO_DATE, stringToDay } from '../engine/dataset';
 import { ProvinceNoteList } from '../components/ProvinceNotes';
 
@@ -59,12 +61,12 @@ export function QuotePage() {
   const uploadedWithStats = useMemo(() => {
     if (!uploaded) return null;
     const q = structuredClone(uploaded);
-    attachStats(d.model, uploadedMask, q);
+    attachStats(d.model, uploadedMask, q, s.systemProvinces);
     return q;
-  }, [uploaded, d.model, uploadedMask]);
+  }, [uploaded, d.model, uploadedMask, s.systemProvinces]);
   const activeQ = target === 'uploaded' && uploadedWithStats ? uploadedWithStats : active;
 
-  const check = useMemo(() => (activeQ ? checkQuote(d.model, activeQ, checkMask) : null), [activeQ, d.model, checkMask]);
+  const check = useMemo(() => (activeQ ? checkQuote(d.model, activeQ, checkMask, s.systemProvinces) : null), [activeQ, d.model, checkMask, s.systemProvinces]);
 
   const exceptions = useMemo(() => {
     if (!check) return [];
@@ -120,6 +122,14 @@ export function QuotePage() {
     ]), '客户报价模板');
   };
 
+  const exportSheetLayout = () => {
+    if (!inferred) return;
+    const name = single ? d.nameOf('customer', single.code) : '客户';
+    const { rows, warnings } = quoteToSheetRows(inferred, { title: `${name}中通快递价格表（按系统实际收费还原，待核对）`, sheetFee: inferred.sheetFee, note: `${new Date().toLocaleDateString('zh-CN')} 由盈亏透镜根据系统实收数据还原` });
+    if (warnings.length) rows.push([], ...warnings.map((w) => ['⚠ ' + w]));
+    downloadXlsx(writeXlsx([{ name: name.slice(0, 28), rows, colWidths: [10, 11, 11, 11, 11, 11, 11, 14, 16] }]), `${name}价格表（系统还原）`);
+  };
+
   const exportExceptions = () => {
     if (!check) return;
     const price = d.model.cols.price!, w = d.model.cols.weight!;
@@ -163,7 +173,7 @@ export function QuotePage() {
       )}
 
       <Card
-        title="系统还原的报价"
+        title="系统还原的报价（以系统实际收费为准）"
         metric="price"
         span={2}
         exportName="系统还原报价"
@@ -177,6 +187,7 @@ export function QuotePage() {
         }
         actions={
           <>
+            <button type="button" className="icon-btn" onClick={exportSheetLayout} disabled={!inferred} title="按网点价格表的版式导出，可直接贴进价格表">⤓ 价格表版式</button>
             <button type="button" className="icon-btn" onClick={downloadTemplate} disabled={!inferred}>⤓ 报价模板</button>
             <button type="button" className="icon-btn" onClick={() => fileRef.current?.click()}>⤒ 上传报价</button>
             <button type="button" className="icon-btn" disabled={!inferred} onClick={() => { dispatch({ type: 'simQuote', quote: structuredClone(target === 'uploaded' && uploaded ? uploaded : inferred!) }); dispatch({ type: 'tab', tab: 'sim' }); }}>✎ 调价模拟</button>
@@ -220,15 +231,16 @@ export function QuotePage() {
           metric="coverage"
           span={2}
           exportName="报价核对结果"
-          subtitle={`核对对象：${target === 'uploaded' && uploaded ? uploadedLabel : '系统还原的报价'}${target === 'uploaded' && bookSheet?.effectiveFrom && !s.uploadedQuote ? `（${bookSheet.effectiveFrom} 起生效，之前的单不参与）` : ''}；${METRICS.price.note}`}
+          subtitle={<>{`核对对象：${target === 'uploaded' && uploaded ? uploadedLabel : '系统还原的报价'}${target === 'uploaded' && bookSheet?.effectiveFrom && !s.uploadedQuote ? `（${bookSheet.effectiveFrom} 起生效，之前的单不参与）` : ''}；${METRICS.price.note}`}<SystemProvinceEditor /></>}
           actions={uploaded ? <Seg size="sm" value={target} onChange={setTarget} options={[{ value: 'inferred', label: '对照还原报价' }, { value: 'uploaded', label: s.uploadedQuote ? '对照上传报价' : '对照价格表' }]} /> : undefined}
         >
           <div className="kpis">
             <Kpi label="参与核对" value={fmtInt(t.n)} sub="重量、运费都大于 0 的单" />
-            <Kpi label="一致率" metric="coverage" value={fmtPct(t.match / Math.max(1, t.n), 2)} sub={`${fmtInt(t.match)} 单与报价一致`} tone={t.match / Math.max(1, t.n) < 0.99 ? 'warn' : 'pos'} />
+            <Kpi label="一致率" metric="coverage" value={fmtPct((t.match + t.system) / Math.max(1, t.n), 2)} sub={`${fmtInt(t.match)} 单与报价一致${t.system ? `，${fmtInt(t.system)} 单以系统为准` : ''}`} tone={(t.match + t.system) / Math.max(1, t.n) < 0.99 ? 'warn' : 'pos'} />
             <Kpi label="多收" value={fmtInt(t.over)} sub="实收高于报价" tone={t.over ? 'warn' : undefined} />
             <Kpi label="少收" value={fmtInt(t.under)} sub="实收低于报价，直接损失" tone={t.under ? 'neg' : undefined} />
             <Kpi label="无报价" value={fmtInt(t.noQuote)} sub="报价未覆盖的省份/重量" tone={t.noQuote ? 'warn' : undefined} />
+            {t.system > 0 && <Kpi label="以系统为准" value={fmtInt(t.system)} sub={`${s.systemProvinces.join('、')} 与报价不同，不计差异`} />}
             <Kpi label="差额合计" metric="diff" value={fmtMoney(t.diff)} sub="正 = 多收，负 = 少收" tone={t.diff < -0.005 ? 'neg' : undefined} />
           </div>
           <div className="tbl-wrap">
@@ -243,9 +255,9 @@ export function QuotePage() {
                       <td className="nowrap"><b>{name}</b></td>
                       {row.map((c, b) => {
                         if (!c.n) return <td key={b} className="r muted">—</td>;
-                        const rate = c.match / c.n;
+                        const rate = (c.match + c.system) / c.n;
                         return (
-                          <td key={b} className={`r num ${rate < 1 ? (rate < 0.95 ? 'cell-bad' : 'cell-warn') : ''}`} title={`${fmtInt(c.n)} 单：一致 ${c.match}，多收 ${c.over}，少收 ${c.under}，无报价 ${c.noQuote}；差额 ${c.diff.toFixed(2)} 元`}>
+                          <td key={b} className={`r num ${rate < 1 ? (rate < 0.95 ? 'cell-bad' : 'cell-warn') : ''}`} title={`${fmtInt(c.n)} 单：一致 ${c.match}，以系统为准 ${c.system}，多收 ${c.over}，少收 ${c.under}，无报价 ${c.noQuote}；差额 ${c.diff.toFixed(2)} 元`}>
                             {fmtPct(rate, rate < 1 && rate > 0.99 ? 2 : 0)}<small> / {fmtInt(c.n)}</small>
                           </td>
                         );

@@ -22,7 +22,7 @@ export function BandEditor() {
         <Tip>
           <div className="tip-title">分析用重量段</div>
           <div className="tip-row"><span>规则</span>输入分界点（kg），区间「左开右闭」：1.2kg 属于「≤1.2」段。</div>
-          <div className="tip-note">默认使用从客户报价还原出的分界点，这样分析结果与报价一一对应。修改会自动保存在本机浏览器。</div>
+          <div className="tip-note">单个客户的数据默认使用从其报价还原出的分界点，分析结果与报价一一对应；多个客户的数据默认使用网点价格表最常用的分界（0.5、1、1.2、1.5、2、3、5、10）。修改会自动保存在本机浏览器。</div>
         </Tip>
       </span>
       <input
@@ -35,7 +35,7 @@ export function BandEditor() {
         placeholder="例如 0.5, 1, 2, 3"
       />
       <span className="be-preview">{bandLabels(current).join('　')}</span>
-      <button type="button" className="link" onClick={() => dispatch({ type: 'bands', bands: null })}>按报价断点</button>
+      <button type="button" className="link" onClick={() => dispatch({ type: 'bands', bands: null })}>默认分段</button>
       <button type="button" className="link" onClick={() => dispatch({ type: 'bands', bands: DEFAULT_BREAKPOINTS })}>常用分段</button>
     </div>
   );

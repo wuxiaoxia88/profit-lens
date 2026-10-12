@@ -79,7 +79,10 @@ describe('价格表解析', () => {
     expect(priceOf(q, '北京', 0.9)).toBe(3.3);
     expect(priceOf(q, '甘肃', 2.2)).toBe(6 + 6 * 2);
     expect(priceOf(q, '新疆', 1.5)).toBe(30);
-    expect(r.warnings.some((w) => w.includes('5KG以上续重加收'))).toBe(true);
+    // 「北京5KG以上续重加收1元/公斤」：首重 4+1(加收)，5kg 以上每 kg 2.5+1
+    expect(priceOf(q, '北京', 4)).toBe(5 + 2.5 * 3);
+    expect(priceOf(q, '北京', 6.07)).toBe(5 + 3.5 * 6);
+    expect(priceOf(q, '上海', 6.07)).toBe(5 + 1 * 6);
   });
 
   it('客户名匹配', () => {
@@ -88,5 +91,34 @@ describe('价格表解析', () => {
     const { assign, weak } = matchSheetsToCustomers(['张某', '李某（甲品牌）', '王某某'], ['张某K2', '甲品牌', '王某某CK', '赵某']);
     expect(assign).toEqual({ 张某K2: '张某', 甲品牌: '李某（甲品牌）', 王某某CK: '王某某' });
     expect(weak).toEqual(['甲品牌']);
+  });
+});
+
+import { generateDemo } from '../src/engine/demo';
+import { applyFilters, buildModel, DEFAULT_FILTERS } from '../src/engine/model';
+import { inferQuote } from '../src/engine/quote/infer';
+import { quoteToSheetRows } from '../src/engine/quote/sheetExport';
+import { tailPrice } from '../src/engine/quote/types';
+
+describe('导出为价格表版式', () => {
+  it('还原报价 → 价格表版式 → 再解析，价格不变', () => {
+    const m = buildModel(generateDemo(30000));
+    const { mask } = applyFilters(m, DEFAULT_FILTERS);
+    const q = inferQuote(m, mask).quote;
+    const { rows, warnings } = quoteToSheetRows(q, { title: '示例客户价格表', sheetFee: q.sheetFee });
+    const back = parseQuoteSheet('示例客户', rows.map((r) => r.map((v) => (v === null || v === undefined ? '' : String(v)))));
+    expect(back.quote).not.toBeNull();
+    expect(warnings.filter((w) => !w.includes('无法用价格表版式'))).toEqual([]);
+    for (const prov of ['河南', '浙江', '北京', '甘肃', '新疆']) {
+      for (const w of [0.3, 1, 1.2, 1.4, 1.9, 2.5, 3.6, 7.2]) {
+        const a = priceOf(q, prov, w), b = priceOf(back.quote!, prov, w);
+        if (Number.isFinite(a)) expect([prov, w, b]).toEqual([prov, w, a]);
+      }
+    }
+  });
+  it('北京 5kg 以上续重加收', () => {
+    const t = { start: 2, base: 4, perKg: 2.5, rounding: 'ceil' as const, origin: 1, steps: [{ above: 5, perKgAdd: 1 }] };
+    expect(tailPrice(t, 4)).toBe(4 + 2.5 * 3);
+    expect(tailPrice(t, 6.07)).toBe(4 + 3.5 * 6);
   });
 });

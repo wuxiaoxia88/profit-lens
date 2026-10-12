@@ -22,6 +22,8 @@ export interface TailRule {
   perKg: number;
   rounding: Rounding;
   origin?: number;
+  /** 阶梯加价：重量超过 above 后，每个计费公斤再加 perKgAdd（如「北京5KG以上续重加收1元/公斤」） */
+  steps?: { above: number; perKgAdd: number }[];
 }
 
 export const originOf = (t: TailRule) => t.origin ?? t.start;
@@ -72,7 +74,10 @@ export function gOf(x: number, r: Rounding): number {
 }
 
 export function tailPrice(t: TailRule, w: number): number {
-  return round2(t.base + t.perKg * gOf(w - originOf(t), t.rounding));
+  const g = gOf(w - originOf(t), t.rounding);
+  let perKg = t.perKg;
+  if (t.steps) for (const st of t.steps) if (w > st.above + 1e-9) perKg += st.perKgAdd;
+  return round2(t.base + perKg * g);
 }
 
 /** 按报价计算某分区某重量的应收价；返回 NaN 表示无报价 */
@@ -93,7 +98,8 @@ export function sameTail(a: TailRule | null, b: TailRule | null): boolean {
     Math.abs(a.base - b.base) < PRICE_TOL &&
     Math.abs(a.perKg - b.perKg) < 1e-6 &&
     a.rounding === b.rounding &&
-    Math.abs(originOf(a) - originOf(b)) < 1e-9
+    Math.abs(originOf(a) - originOf(b)) < 1e-9 &&
+    JSON.stringify(a.steps ?? []) === JSON.stringify(b.steps ?? [])
   );
 }
 
@@ -101,7 +107,8 @@ export function describeTail(t: TailRule): string {
   const o = originOf(t);
   const x = o === 0 ? '重量' : `重量−${o}`;
   const g = t.rounding === 'exact' ? `(${x})` : t.rounding === 'ceil' ? `⌈${x}⌉` : `⌈(${x})×2⌉÷2`;
-  return `>${t.start}kg：${t.base} + ${t.perKg}×${g}`;
+  const steps = (t.steps ?? []).map((st) => `；>${st.above}kg 每kg +${st.perKgAdd}`).join('');
+  return `>${t.start}kg：${t.base} + ${t.perKg}×${g}${steps}`;
 }
 
 const CN = '一二三四五六七八九十';

@@ -19,6 +19,16 @@ interface ProvData {
 export interface InferOptions {
   /** 断点需被多少比例的「两侧都有数据的省份」支持 */
   minSupportRatio?: number;
+  /** 只用这些行（行号列表）推断；给了它就不再遍历全表，用于多客户批量推断 */
+  rows?: Int32Array;
+  /** 是否回填各分区覆盖统计（需要遍历全表，批量推断时关闭） */
+  stats?: boolean;
+}
+
+/** 遍历参与推断的行：给了行号列表就只走列表，否则按掩码走全表 */
+function eachRow(m: Model, mask: Uint8Array, rows: Int32Array | undefined, fn: (i: number) => void) {
+  if (rows) { for (let k = 0; k < rows.length; k++) { const i = rows[k]; if (mask[i]) fn(i); } return; }
+  for (let i = 0; i < m.n; i++) if (mask[i]) fn(i);
 }
 
 export interface InferResult {
@@ -27,7 +37,8 @@ export interface InferResult {
   notes: string[];
 }
 
-const NICE_STEPS = [1, 0.5, 0.1, 0.05, 0.01];
+// 报价单的重量分界都是 0.1kg 的整数倍（1.2、1.5、0.3…），不会出现 1.47 这样的值
+const NICE_STEPS = [1, 0.5, 0.1];
 
 function nicest(lo: number, hi: number): number {
   for (const step of NICE_STEPS) {
@@ -38,21 +49,34 @@ function nicest(lo: number, hi: number): number {
 }
 
 
-function collect(m: Model, mask: Uint8Array): ProvData[] {
+function collect(m: Model, mask: Uint8Array, rows?: Int32Array): ProvData[] {
   const w = m.cols.weight!, price = m.cols.price!;
   const maps = m.provNames.map(() => new Map<number, number>());
   const tickets = new Float64Array(m.provNames.length);
-  for (let i = 0; i < m.n; i++) {
-    if (!mask[i]) continue;
+  // 超 1kg 却没有中转收入（只收了面单费）的单，多半是中转费未入账或另行汇总计费。
+  // 若某省大多数超 1kg 的单都有中转收入，这些单就不参与推断（核对时仍会作为例外列出）。
+  const tr = m.cols.inTransfer;
+  const skipZero = new Uint8Array(m.provNames.length);
+  if (tr) {
+    const heavy = new Float64Array(m.provNames.length), zero = new Float64Array(m.provNames.length);
+    eachRow(m, mask, rows, (i) => {
+      if (!(w[i] > 1) || !(price[i] > 0)) return;
+      heavy[m.prov[i]]++;
+      if (!(tr[i] > 0)) zero[m.prov[i]]++;
+    });
+    for (let p = 0; p < heavy.length; p++) skipZero[p] = heavy[p] && zero[p] / heavy[p] < 0.5 ? 1 : 0;
+  }
+  eachRow(m, mask, rows, (i) => {
     const wi = w[i], pi = price[i];
-    if (!(wi > 0) || !(pi > 0)) continue;
+    if (!(wi > 0) || !(pi > 0)) return;
+    if (tr && wi > 1 && skipZero[m.prov[i]] && !(tr[i] > 0)) return;
     const w100 = Math.min(99999, Math.round(wi * 100));
     const p100 = Math.round(pi * 100);
     const key = w100 * 1e7 + p100;
     const mp = maps[m.prov[i]];
     mp.set(key, (mp.get(key) ?? 0) + 1);
     tickets[m.prov[i]]++;
-  }
+  });
   const out: ProvData[] = [];
   maps.forEach((mp, idx) => {
     if (!mp.size) return;
@@ -171,7 +195,8 @@ function selectBreakpoints(provs: ProvData[], ratio: number): number[] {
     for (let k = 1; k < runs.length; k++) ivs.push({ prov: pi, lo: runs[k - 1].w1, hi: runs[k].w0, used: false });
   });
   // 从轻到重依次判断：重货区每公斤一个台阶，若按支持度贪心会抢走真正的段边界
-  const cands = [...new Set(ivs.map((iv) => nicest(iv.lo, iv.hi)))].sort((a, b) => a - b);
+  const isNice = (c: number) => Math.abs(c * 10 - Math.round(c * 10)) < 1e-6;
+  const cands = [...new Set(ivs.map((iv) => nicest(iv.lo, iv.hi)))].filter(isNice).sort((a, b) => a - b);
   const chosen: number[] = [];
   const minAbs = Math.min(2, provs.length);
   for (const c of cands) {
@@ -203,6 +228,12 @@ function truncateToTail(provs: ProvData[], bps: number[]): number[] {
       if (f) { total += f.total; matched += f.matched; }
     }
     if (total > 0 && matched / total >= 0.95) return bps.slice(0, k + 1);
+    // 3kg 以上没有足够证据支撑固定重量段、且票量很少时，按网点惯例改为续重计价
+    if (total === 0 && s >= 3 - 1e-9) {
+      let above = 0, all = 0;
+      for (const pd of provs) for (const x of pd.pts) { all += x.c; if (x.w > s + 1e-9) above += x.c; }
+      if (above < all * 0.01) return bps.slice(0, k + 1);
+    }
   }
   return bps;
 }
@@ -230,6 +261,8 @@ function bandModes(pts: Pt[], bps: number[], upTo = Infinity): BandMode[] {
 interface ProvModel {
   pd: ProvData;
   prices: (number | null)[];
+  /** 各段的票数：票数很少的段在分区聚类时不作为区分依据 */
+  support: number[];
   earlyTail: TailRule | null;
   matched: number;
 }
@@ -239,7 +272,8 @@ function provinceModel(pd: ProvData, bps: number[]): ProvModel {
   const modes = bandModes(pd.pts, bps);
   const tailFit = fitTail(pd.pts, last);
   const baseline = modes.reduce((a, m) => a + m.c, 0) + (tailFit?.matched ?? 0);
-  const result: ProvModel = { pd, prices: modes.map((m) => m.p), earlyTail: null, matched: baseline };
+  const support = modes.map((m) => m.total);
+  const result: ProvModel = { pd, prices: modes.map((m) => m.p), support, earlyTail: null, matched: baseline };
   if (baseline >= pd.tickets || pd.tickets < 2) return result;
 
   // 覆盖率偏低：尝试更早开始续重（如新疆/西藏：首重 1kg + 按实重续重）
@@ -265,7 +299,7 @@ function provinceModel(pd: ProvData, bps: number[]): ProvModel {
     const s = best.s;
     // s 以上的整段不再单独报价
     const prices = best.modes.map((m, b) => ((b === 0 ? 0 : bps[b - 1]) >= s - 1e-9 ? null : m.p));
-    return { pd, prices, earlyTail: best.fit.rule, matched: best.matched };
+    return { pd, prices, support, earlyTail: best.fit.rule, matched: best.matched };
   }
   return result;
 }
@@ -283,11 +317,19 @@ function compatible(a: (number | null)[], b: (number | null)[]): boolean {
 export function inferQuote(m: Model, mask: Uint8Array, opts: InferOptions = {}): InferResult {
   const notes: string[] = [];
   if (!m.cols.price || !m.cols.weight) throw new Error('缺少运费或重量字段，无法还原报价');
-  const provs = collect(m, mask);
+  const provs = collect(m, mask, opts.rows);
   if (!provs.length) throw new Error('筛选范围内没有有效运单（重量和运费都需大于 0）');
 
   let bps = selectBreakpoints(provs, opts.minSupportRatio ?? 0.3);
   if (bps.length > 1) bps = truncateToTail(provs, bps);
+  // 最上面的重量段若几乎没有单（少于 8 单），并入续重区间，避免用一两单定出整段价格
+  while (bps.length > 1) {
+    const lo = bps[bps.length - 2], hi = bps[bps.length - 1];
+    let c = 0;
+    for (const pd of provs) for (const x of pd.pts) if (x.w > lo + 1e-9 && x.w <= hi + 1e-9) c += x.c;
+    if (c >= 8) break;
+    bps = bps.slice(0, -1);
+  }
   if (!bps.length) {
     const maxW = Math.max(...provs.map((p) => p.maxW));
     bps = [Math.max(1, Math.ceil(maxW))];
@@ -299,6 +341,7 @@ export function inferQuote(m: Model, mask: Uint8Array, opts: InferOptions = {}):
   const pms = provs.map((pd) => provinceModel(pd, bps)).sort((a, b) => b.pd.tickets - a.pd.tickets);
   interface ZoneAcc { members: ProvModel[]; prices: (number | null)[]; earlyTail: TailRule | null }
   const zones: ZoneAcc[] = [];
+  // 第一遍：严格聚类（所有有价格的段都相同才算同一分区）
   for (const pm of pms) {
     const z = zones.find((z) => sameTail(z.earlyTail, pm.earlyTail) && compatible(z.prices, pm.prices));
     if (z) {
@@ -306,6 +349,35 @@ export function inferQuote(m: Model, mask: Uint8Array, opts: InferOptions = {}):
       pm.prices.forEach((p, i) => { if (z.prices[i] === null) z.prices[i] = p; });
     } else {
       zones.push({ members: [pm], prices: [...pm.prices], earlyTail: pm.earlyTail });
+    }
+  }
+  // 第二遍：小分区若只在「本分区合计不足 3 单」的段上与大分区不同，视为个别异常单，并入大分区
+  const MIN_BAND = 3;
+  const supportOf = (z: ZoneAcc) => z.prices.map((_, i) => z.members.reduce((a, pm) => a + pm.support[i], 0));
+  const ticketsOfZone = (z: ZoneAcc) => z.members.reduce((a, pm) => a + pm.pd.tickets, 0);
+  for (let changed = true; changed; ) {
+    changed = false;
+    const order = [...zones].sort((a, b) => ticketsOfZone(a) - ticketsOfZone(b));
+    for (const small of order) {
+      const sup = supportOf(small);
+      const target = zones
+        .filter((z) => z !== small && ticketsOfZone(z) > ticketsOfZone(small) && sameTail(z.earlyTail, small.earlyTail))
+        .find((z) => {
+          let agree = 0;
+          for (let i = 0; i < z.prices.length; i++) {
+            const a = small.prices[i], c = z.prices[i];
+            if (a === null || c === null) continue;
+            if (Math.abs(a - c) <= PRICE_TOL) agree++;
+            else if (sup[i] >= MIN_BAND) return false;
+          }
+          return agree > 0;
+        });
+      if (target) {
+        target.members.push(...small.members);
+        zones.splice(zones.indexOf(small), 1);
+        changed = true;
+        break;
+      }
     }
   }
 
@@ -336,6 +408,17 @@ export function inferQuote(m: Model, mask: Uint8Array, opts: InferOptions = {}):
       if (!fit.lowConfidence && fit.matched > 1) allK.push(fit.rule.perKg);
       left = left.filter((pm) => !members.includes(pm));
     }
+    // 续重样本少于 3 单的分组不单独成区：并回第一组（最大样本组），标为低置信
+    if (groups.length > 1) {
+      const sizeOf = (g: { fit: TailFit }) => g.fit.total;
+      const keep = groups.filter((g, k) => k === 0 || sizeOf(g) >= 3);
+      const dropped = groups.filter((g) => !keep.includes(g));
+      if (dropped.length) {
+        keep[0].members.push(...dropped.flatMap((g) => g.members));
+        if (keep.length === 1) keep[0].fit = { ...keep[0].fit, lowConfidence: keep[0].fit.lowConfidence || keep[0].fit.total < 3 };
+      }
+      groups.splice(0, groups.length, ...keep);
+    }
     pending.push({ acc: z, groups, rest });
   }
 
@@ -361,9 +444,9 @@ export function inferQuote(m: Model, mask: Uint8Array, opts: InferOptions = {}):
       out.push({ zone: mkZone(z.members, z.prices, z.earlyTail, false), tickets: ticketsOf(z.members) });
     } else if (pz.groups.length <= 1) {
       const g = pz.groups[0];
-      out.push({ zone: mkZone(z.members, z.prices, g?.fit.rule ?? null, g?.fit.lowConfidence ?? false), tickets: ticketsOf(z.members) });
+      out.push({ zone: mkZone(z.members, z.prices, g?.fit.rule ?? null, g?.fit.lowConfidence ?? false, g?.fit), tickets: ticketsOf(z.members) });
     } else {
-      for (const g of pz.groups) out.push({ zone: mkZone(g.members, z.prices, g.fit.rule, g.fit.lowConfidence), tickets: ticketsOf(g.members) });
+      for (const g of pz.groups) out.push({ zone: mkZone(g.members, z.prices, g.fit.rule, g.fit.lowConfidence, g.fit), tickets: ticketsOf(g.members) });
       if (pz.rest.length) {
         out.push({ zone: mkZone(pz.rest, z.prices, null, false), tickets: ticketsOf(pz.rest) });
         notes.push(`同一价格档的省份在 ${last}kg 以上出现了 ${pz.groups.length} 种续重规则，已拆分；没有重货样本的省份续重留空，请手工补充。`);
@@ -378,7 +461,7 @@ export function inferQuote(m: Model, mask: Uint8Array, opts: InferOptions = {}):
   if (m.cols.inSheet) {
     const counts = new Map<number, number>();
     const a = m.cols.inSheet;
-    for (let i = 0; i < m.n; i++) if (mask[i] && a[i] > 0) { const v = round2(a[i]); counts.set(v, (counts.get(v) ?? 0) + 1); }
+    eachRow(m, mask, opts.rows, (i) => { if (a[i] > 0) { const v = round2(a[i]); counts.set(v, (counts.get(v) ?? 0) + 1); } });
     sheetFee = mode([...counts.entries()], true);
   }
 
@@ -391,6 +474,7 @@ export function inferQuote(m: Model, mask: Uint8Array, opts: InferOptions = {}):
     sheetFee,
     createdAt: new Date().toISOString(),
   };
+  if (opts.stats === false) return { quote, coverage: NaN, notes };
   attachStats(m, mask, quote);
   const t = quote.zones.reduce((a, z) => a + (z.stats?.tickets ?? 0), 0);
   const matched = quote.zones.reduce((a, z) => a + (z.stats?.matched ?? 0), 0);
@@ -407,14 +491,14 @@ function fitTailWith(pts: Pt[], rule: TailRule): { matched: number; total: numbe
   return { matched, total };
 }
 
-function mkZone(members: ProvModel[], prices: (number | null)[], tail: TailRule | null, low: boolean): QuoteZone {
+function mkZone(members: ProvModel[], prices: (number | null)[], tail: TailRule | null, low: boolean, fit?: TailFit): QuoteZone {
   return {
     id: '',
     name: '',
     provinces: members.map((pm) => pm.pd.name),
     prices: [...prices],
     tail,
-    stats: { tickets: 0, matched: 0, tailSamples: 0, tailMatched: 0, tailLowConfidence: low || undefined },
+    stats: { tickets: 0, matched: 0, tailSamples: fit?.total ?? 0, tailMatched: fit?.matched ?? 0, tailLowConfidence: low || (fit !== undefined && fit.total < 3) || undefined },
   };
 }
 
@@ -430,19 +514,19 @@ function mode(xs: number[] | [number, number][], weighted?: boolean): number | u
 }
 
 /** 用核对结果回填每个分区的覆盖统计 */
-export function attachStats(m: Model, mask: Uint8Array, q: Quote): void {
-  const r = checkQuote(m, q, mask);
+export function attachStats(m: Model, mask: Uint8Array, q: Quote, systemProvinces: string[] = []): void {
+  const r = checkQuote(m, q, mask, systemProvinces);
   const w = m.cols.weight!;
   q.zones.forEach((z, zi) => {
     const row = r.cells[zi];
     const tickets = row.reduce((a, c) => a + c.n, 0);
-    const matched = row.reduce((a, c) => a + c.match, 0);
+    const matched = row.reduce((a, c) => a + c.match + c.system, 0);
     let tailSamples = 0, tailMatched = 0;
     if (z.tail) {
       for (let i = 0; i < m.n; i++) {
         if (r.zones[i] !== zi || r.status[i] === 4 || !(w[i] > z.tail.start + 1e-9)) continue;
         tailSamples++;
-        if (r.status[i] === 0) tailMatched++;
+        if (r.status[i] === 0 || r.status[i] === 5) tailMatched++;
       }
     }
     z.stats = { tickets, matched, tailSamples, tailMatched, tailLowConfidence: z.stats?.tailLowConfidence };
